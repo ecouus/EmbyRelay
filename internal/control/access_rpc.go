@@ -21,6 +21,7 @@ type AccessCommand struct {
 	Token         string `json:"token"`
 	Lease         string `json:"lease"`
 	Bytes         int64  `json:"bytes"`
+	RefundBytes   int64  `json:"refund_bytes,omitempty"`
 	Stream        bool   `json:"stream"`
 	Username      string `json:"username"`
 	Password      string `json:"password"`
@@ -96,8 +97,18 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 		leaseHash = Hash("public-image:" + in.KeyID)
 	}
 	if in.Action == "finish" {
+		if in.RefundBytes < 0 || in.RefundBytes > 256*1024 {
+			return denied("invalid refund")
+		}
 		result, deleteErr := tx.Exec("DELETE FROM access_leases WHERE id=? AND account_id=? AND node_id=? AND token_hash=?", in.Lease, c.ID, node, leaseHash)
 		err = deleteErr
+		if err == nil && in.RefundBytes > 0 {
+			n, _ := result.RowsAffected()
+			if n > 0 {
+				cycle, _ := accountCycle(c, now)
+				_, err = tx.Exec("UPDATE access_usage SET bytes=MAX(0,bytes-?) WHERE account_id=? AND cycle=?", in.RefundBytes*2, c.ID, cycle)
+			}
+		}
 		if err == nil && in.Status >= 100 && in.Status <= 599 {
 			n, _ := result.RowsAffected()
 			if n > 0 && !in.PublicImage {

@@ -194,6 +194,7 @@ func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeR
 	}
 	command.Action = "begin"
 	command.Stream = mediaRequest(q)
+	mw.stream = command.Stream
 	out, err := a.accessCall(q.Context(), command)
 	if err != nil {
 		diagnosticReason(q, "订阅：到期、额度、并发或登录授权检查失败")
@@ -214,6 +215,7 @@ func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeR
 		finish.Action = "finish"
 		mw.mu.Lock()
 		finish.Status = mw.responseStatus
+		finish.RefundBytes = mw.accessRefund
 		if finish.Status == 0 {
 			finish.Status = 200
 		}

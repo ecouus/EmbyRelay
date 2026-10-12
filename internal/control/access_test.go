@@ -237,6 +237,36 @@ func TestSubscriptionAtomicBudgetAndConcurrent(t *testing.T) {
 		t.Fatal("revoked stream retained access")
 	}
 }
+
+func TestSubscriptionFinishRefundsPartialChunkOnce(t *testing.T) {
+	a, _, c, prefix := subscriptionFixture(t)
+	token := subscriptionLogin(t, a, prefix)
+	c, _ = get[AccessAccount](a.Store, "access_account", c.ID)
+	cmd := AccessCommand{AccountID: c.ID, KeyID: c.KeyID, Token: token, Action: "begin", Stream: true}
+	out, err := a.accessCall(context.Background(), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Lease = out.Lease
+	cmd.Action = "charge"
+	cmd.Bytes = 32 * 1024
+	if _, err = a.accessCall(context.Background(), cmd); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Action = "finish"
+	cmd.RefundBytes = 16 * 1024
+	if _, err = a.accessCall(context.Background(), cmd); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.accessCall(context.Background(), cmd); err != nil {
+		t.Fatal(err)
+	}
+	cycle, _ := accountCycle(c, time.Now())
+	var used int64
+	if err = a.Store.DB.QueryRow("SELECT bytes FROM access_usage WHERE account_id=? AND cycle=?", c.ID, cycle).Scan(&used); err != nil || used != 32*1024 {
+		t.Fatalf("refunded usage = %d, err = %v", used, err)
+	}
+}
 func TestSubscriptionCalendar(t *testing.T) {
 	jan := time.Date(2027, 1, 31, 12, 0, 0, 0, time.UTC)
 	if got := addMonths(jan, 1); got.Month() != time.February || got.Day() != 28 {

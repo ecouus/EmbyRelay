@@ -45,6 +45,46 @@ func testApp(t *testing.T) (*App, *http.Cookie) {
 	return a, rr.Result().Cookies()[0]
 }
 
+func TestStreamMeterUsesLargerSubscriptionCharges(t *testing.T) {
+	a, admin := testApp(t)
+	route, _ := configured(t, a, admin, "http://127.0.0.1:8096")
+	var charges []int
+	w := &meterWriter{
+		ResponseWriter: httptest.NewRecorder(), app: a, route: route,
+		usage: &routeRuntime{}, ctx: context.Background(), stream: true,
+		accessCharge: func(n int) error { charges = append(charges, n); return nil },
+	}
+	if n, err := w.Write(bytes.Repeat([]byte("x"), 512*1024)); err != nil || n != 512*1024 {
+		t.Fatalf("wrote %d: %v", n, err)
+	}
+	if len(charges) != 2 || charges[0] != 256*1024 || charges[1] != 256*1024 {
+		t.Fatalf("charges = %v", charges)
+	}
+}
+
+func TestStreamMeterShrinksChargeNearQuota(t *testing.T) {
+	a, admin := testApp(t)
+	route, _ := configured(t, a, admin, "http://127.0.0.1:8096")
+	var charges []int
+	w := &meterWriter{
+		ResponseWriter: httptest.NewRecorder(), app: a, route: route,
+		usage: &routeRuntime{}, ctx: context.Background(), stream: true,
+		accessCharge: func(n int) error {
+			charges = append(charges, n)
+			if n > 64*1024 {
+				return fmt.Errorf("本周期剩余流量不足")
+			}
+			return nil
+		},
+	}
+	if n, err := w.Write(bytes.Repeat([]byte("x"), 128*1024)); err != nil || n != 128*1024 {
+		t.Fatalf("wrote %d: %v", n, err)
+	}
+	if len(charges) != 3 || charges[0] != 128*1024 || charges[1] != 64*1024 || charges[2] != 64*1024 {
+		t.Fatalf("charges = %v", charges)
+	}
+}
+
 // Opt in to running the existing behavioral suite against an isolated schema
 // in a real PostgreSQL database. The SQLite default remains unchanged.
 func testStore(t *testing.T) (*Store, error) {

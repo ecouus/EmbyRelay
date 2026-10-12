@@ -163,6 +163,8 @@ func (a *App) play(w http.ResponseWriter, r *http.Request) {
 type meterWriter struct {
 	responseStatus int
 	accessCharge   func(int) error
+	accessRefund   int64
+	stream         bool
 	connection     net.Conn
 	mu             sync.Mutex
 	http.ResponseWriter
@@ -214,7 +216,6 @@ func (w *meterWriter) wait(n int) error {
 func (w *meterWriter) reserve(n int) error {
 	if w.accessCharge != nil {
 		if err := w.accessCharge(n); err != nil {
-			w.setStatus("subscription_denied")
 			return err
 		}
 	}
@@ -263,6 +264,9 @@ func (w *meterWriter) record(n, reserved int) {
 	w.bytes += int64(n)
 	if n < reserved {
 		w.app.Store.Charge(w.route.ID, 0, 0, int64(n-reserved))
+		if w.accessCharge != nil {
+			w.accessRefund += int64(reserved - n)
+		}
 	}
 	if time.Since(w.lastProgress) >= time.Second {
 		w.app.Store.DB.Exec("UPDATE stream_sessions SET bytes_sent=? WHERE id=?", w.bytes, w.session)
@@ -273,11 +277,23 @@ func (w *meterWriter) Write(b []byte) (int, error) {
 	total := 0
 	for len(b) > 0 {
 		size := len(b)
-		if size > 32*1024 {
-			size = 32 * 1024
+		chunk := 32 * 1024
+		if w.stream {
+			chunk = 256 * 1024
 		}
-		if e := w.reserve(size); e != nil {
-			panic(http.ErrAbortHandler)
+		if size > chunk {
+			size = chunk
+		}
+		for {
+			if e := w.reserve(size); e != nil {
+				if w.stream && size > 1 && e.Error() == "本周期剩余流量不足" {
+					size /= 2
+					continue
+				}
+				w.setStatus("subscription_denied")
+				panic(http.ErrAbortHandler)
+			}
+			break
 		}
 		http.NewResponseController(w.ResponseWriter).SetWriteDeadline(time.Now().Add(30 * time.Second))
 		n, e := w.ResponseWriter.Write(b[:size])
@@ -324,6 +340,7 @@ type meterConn struct {
 
 func (c *meterConn) Write(b []byte) (int, error) {
 	if e := c.w.reserve(len(b)); e != nil {
+		c.w.setStatus("subscription_denied")
 		c.Close()
 		return 0, e
 	}
