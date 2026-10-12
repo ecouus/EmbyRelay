@@ -17,8 +17,8 @@ Docker 仓库名称必须小写。支持 linux/amd64（常见 Debian/Ubuntu VPS�
 ## 发布版本
 
 ```sh
-git tag v1.0.13
-git push origin v1.0.13
+git tag v1.0.14
+git push origin v1.0.14
 ```
 
 ```mermaid
@@ -29,7 +29,7 @@ flowchart LR
     D --> E[服务器拉取并重建容器]
 ```
 
-正式标签 `v1.0.13` 对应 `1.0.13`、`1.0`、`latest`；预发布不更新 `latest`。手动运行工作流时选择版本标签。
+正式标签 `v1.0.14` 对应 `1.0.14`、`1.0`、`latest`；预发布不更新 `latest`。手动运行工作流时选择版本标签。
 
 ## Debian / Ubuntu 拉取部署
 
@@ -40,7 +40,7 @@ docker compose -f deploy/docker-compose.yml pull
 docker compose -f deploy/docker-compose.yml up -d --no-build
 ```
 
-本次发布版本为 `1.0.13`，同时更新 `latest`，目标架构为 AMD64/ARM64。HTTPS 和 Agent 使用同一镜像，参照 deployment.md 的配置文件。
+本次发布版本为 `1.0.14`，同时更新 `latest`，目标架构为 AMD64/ARM64。HTTPS 和 Agent 使用同一镜像，参照 deployment.md 的配置文件。
 
 ## 本机手动推送（可选）
 
@@ -48,10 +48,16 @@ docker compose -f deploy/docker-compose.yml up -d --no-build
 # 已登录 Docker Hub 时无需重复 docker login
 docker buildx build --platform linux/amd64,linux/arm64 \
   -f deploy/Dockerfile \
-  -t ecouus/embyrelay:1.0.13 -t ecouus/embyrelay:1.0 -t ecouus/embyrelay:latest --push .
+  -t ecouus/embyrelay:1.0.14 -t ecouus/embyrelay:1.0 -t ecouus/embyrelay:latest --push .
 ```
 
 源代码仓库不包含数据库、master.key、Agent 身份、.env、node_modules、本机构建二进制或临时验收截图（README 展示图片保存在 docs/ 并随仓库提交）。前端 dist 在 CI/Docker 构建时生成。
+
+## 1.0.14 变更
+
+- 源站管理分为管理员源站与用户源站，按所属账号分别展示，避免列表重叠。
+- 概览保留全部源站总数，并展示管理员、用户和已启用数量。
+- 无数据库迁移。
 
 ## 1.0.13 变更
 

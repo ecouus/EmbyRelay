@@ -27,7 +27,7 @@ onUnmounted(()=>{clearInterval(timer);sequence++;sources.value=[]})
 </script>
 <template>
 <section class="panel user-sources" :class="{'compact':compact}">
- <div class="panel-heading"><div><h3>{{compact?'用户添加的 Emby':'用户自助源站'}}</h3><span>{{filtered.length}} / {{sources.length}} 个源站 · 每 15 秒刷新</span></div><n-button size="small" :loading="busy" @click="refresh">刷新源站</n-button></div>
+ <div class="panel-heading"><div><h3>{{compact?'用户添加的 Emby':'用户源站'}}</h3><span>{{filtered.length}} / {{sources.length}} 个源站 · 每 15 秒刷新</span></div><n-button size="small" :loading="busy" @click="refresh">刷新源站</n-button></div>
  <p class="source-note">查看用户保存的源站与中转地址。源站用户名、密码均脱敏展示，凭据加密存储。</p>
  <div v-if="!compact" class="source-search"><n-input v-model:value="search" clearable placeholder="搜索用户、源站名称或地址" /></div>
  <n-alert v-if="error" type="error" closable @close="error=''">{{error}}</n-alert><n-alert v-if="notice" type="success" closable @close="notice=''">{{notice}}</n-alert>
