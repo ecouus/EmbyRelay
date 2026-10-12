@@ -370,6 +370,37 @@ func TestSignedAgentReplayAndReport(t *testing.T) {
 		t.Fatal("duplicate report double counted")
 	}
 }
+func TestAgentTrafficReportAcceptsBoundedEgressCorrection(t *testing.T) {
+	a, admin := testApp(t)
+	route, _ := configured(t, a, admin, "http://127.0.0.1:8096")
+	node := Node{ID: "test-node"}
+	route.RelayID = node.ID
+	if err := a.Store.put("route", route.ID, route, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	day := time.Now().UTC().Format("2006-01-02")
+	first := Heartbeat{Traffic: []Traffic{{Date: day, RouteID: route.ID, Ingress: 100, Egress: 2 << 20}}}
+	if err := a.report(node, first); err != nil {
+		t.Fatal(err)
+	}
+	corrected := first
+	corrected.Traffic = []Traffic{{Date: day, RouteID: route.ID, Ingress: 100, Egress: (2 << 20) - 10*1024}}
+	if err := a.report(node, corrected); err != nil {
+		t.Fatal(err)
+	}
+	traffic, err := a.Store.Traffic()
+	if err != nil || len(traffic) != 1 || traffic[0].Egress != corrected.Traffic[0].Egress {
+		t.Fatalf("corrected traffic = %v, err = %v", traffic, err)
+	}
+	corrected.Traffic[0].Egress = 1
+	if err := a.report(node, corrected); err == nil {
+		t.Fatal("large counter regression accepted")
+	}
+}
+
 func TestTOTPAndEncryptedStore(t *testing.T) {
 	a, _ := testApp(t)
 	secret := "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"

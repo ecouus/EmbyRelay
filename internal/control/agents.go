@@ -309,7 +309,10 @@ func (a *App) report(node Node, in Heartbeat) error {
 		if e == nil {
 			json.Unmarshal([]byte(raw), &previous)
 		}
-		if t.Ingress < previous.Ingress || t.Egress < previous.Egress {
+		// A short downstream write refunds the bytes reserved before writing.
+		// Heartbeats can observe the reservation and then its small correction.
+		// Keep rejecting larger counter regressions caused by a restored Agent DB.
+		if t.Ingress < previous.Ingress || previous.Egress-t.Egress > 1<<20 {
 			return fmt.Errorf("traffic counters cannot decrease; preserve agent database")
 		}
 		if _, e = tx.Exec("INSERT INTO traffic_daily VALUES(?,?,?,?) ON CONFLICT(date,route_id) DO UPDATE SET ingress_bytes=traffic_daily.ingress_bytes+excluded.ingress_bytes,egress_bytes=traffic_daily.egress_bytes+excluded.egress_bytes", t.Date, t.RouteID, t.Ingress-previous.Ingress, t.Egress-previous.Egress); e != nil {
