@@ -39,11 +39,21 @@ func subscriptionFixture(t *testing.T) (*App, *http.Cookie, AccessAccount, strin
 			}
 			writeJSON(w, 200, map[string]string{"ServerName": "Test", "Id": "test"})
 		case "/emby/Items/1/Images/Primary":
-			if r.Header.Get("X-Emby-Token") != "source-secret-token" || r.Header.Get("Cookie") != "" {
+			if (r.Header.Get("X-Emby-Token") != "" && r.Header.Get("X-Emby-Token") != "source-secret-token") || r.Header.Get("Cookie") != "" {
 				t.Error("image authorization missing or proxy cookie leaked")
 			}
 			w.Header().Set("Content-Type", "image/png")
-			w.Write([]byte("test-image"))
+			if r.Header.Get("X-Emby-Token") == "" {
+				w.Write([]byte("public-image"))
+			} else {
+				w.Write([]byte("test-image"))
+			}
+		case "/emby/Items/2/Images/Primary":
+			if r.Header.Get("X-Emby-Token") != "source-secret-token" {
+				http.Error(w, "private image", 401)
+				return
+			}
+			w.Write([]byte("private-image"))
 		case "/Videos/slow/stream":
 			w.Write([]byte("start"))
 			w.(http.Flusher).Flush()

@@ -10,6 +10,7 @@ import (
 )
 
 type AccessCommand struct {
+	PublicImage   bool   `json:"public_image,omitempty"`
 	Status        int    `json:"status,omitempty"`
 	DeviceName    string `json:"device_name,omitempty"`
 	ClientName    string `json:"client_name,omitempty"`
@@ -56,6 +57,9 @@ func (a *App) accessCall(ctx context.Context, in AccessCommand) (AccessResult, e
 	return a.accessCommand(ctx, "local", in)
 }
 func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) (AccessResult, error) {
+	if in.PublicImage && (in.Token != "" || in.Stream || !subscriptionImagePath.MatchString(in.Target) || (in.Action != "begin" && in.Action != "check" && in.Action != "charge" && in.Action != "finish")) {
+		return denied("无效的公开图片授权请求")
+	}
 	c, err := get[AccessAccount](a.Store, "access_account", in.AccountID)
 	if err != nil {
 		return denied("访问账号不存在")
@@ -87,12 +91,16 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 		return denied("访问账号不存在")
 	}
 	now := time.Now()
+	leaseHash := Hash(in.Token)
+	if in.PublicImage {
+		leaseHash = Hash("public-image:" + in.KeyID)
+	}
 	if in.Action == "finish" {
-		result, deleteErr := tx.Exec("DELETE FROM access_leases WHERE id=? AND account_id=? AND node_id=? AND token_hash=?", in.Lease, c.ID, node, Hash(in.Token))
+		result, deleteErr := tx.Exec("DELETE FROM access_leases WHERE id=? AND account_id=? AND node_id=? AND token_hash=?", in.Lease, c.ID, node, leaseHash)
 		err = deleteErr
 		if err == nil && in.Status >= 100 && in.Status <= 599 {
 			n, _ := result.RowsAffected()
-			if n > 0 {
+			if n > 0 && !in.PublicImage {
 				_, err = tx.Exec(`UPDATE access_devices SET last_request_status=?,last_request_at=? WHERE account_id=? AND id=(SELECT json_extract(NULLIF(device_identity,''),'$.record_id') FROM access_tokens WHERE hash=? AND account_id=? AND key_id=?)`, in.Status, now.Unix(), c.ID, Hash(in.Token), c.ID, in.KeyID)
 			}
 		}
@@ -105,9 +113,20 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 		return AccessResult{}, err
 	}
 	var encrypted, userID, identityJSON string
-	err = tx.QueryRow("SELECT source_token,user_id,device_identity FROM access_tokens WHERE hash=? AND account_id=? AND key_id=? AND expires_at>?", Hash(in.Token), c.ID, in.KeyID, now.Unix()).Scan(&encrypted, &userID, &identityJSON)
-	if err != nil {
-		return denied("登录已失效，请重新登录")
+	if in.PublicImage {
+		// The URL key is the bearer credential for public thumbnails. A live
+		// login for this exact account/key/source is still required. No source
+		// token or device session is borrowed to fetch otherwise private images.
+		var live int
+		err = tx.QueryRow("SELECT COUNT(*) FROM (SELECT 1 FROM access_tokens WHERE account_id=? AND key_id=? AND upstream_id=? AND expires_at>? LIMIT 1) AS live_session", c.ID, in.KeyID, up.ID, now.Unix()).Scan(&live)
+		if err != nil || live == 0 {
+			return denied("图片访问需要先登录当前订阅入口")
+		}
+	} else {
+		err = tx.QueryRow("SELECT source_token,user_id,device_identity FROM access_tokens WHERE hash=? AND account_id=? AND key_id=? AND expires_at>?", Hash(in.Token), c.ID, in.KeyID, now.Unix()).Scan(&encrypted, &userID, &identityJSON)
+		if err != nil {
+			return denied("登录已失效，请重新登录")
+		}
 	}
 	cycle, _ := accountCycle(c, now)
 	var used int64
@@ -154,16 +173,18 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 		if in.Stream {
 			isStream = 1
 		}
-		if _, err = tx.Exec("INSERT INTO access_leases VALUES(?,?,?,?,?,?)", out.Lease, c.ID, Hash(in.Token), node, now.Unix()+30, isStream); err != nil {
+		if _, err = tx.Exec("INSERT INTO access_leases VALUES(?,?,?,?,?,?)", out.Lease, c.ID, leaseHash, node, now.Unix()+30, isStream); err != nil {
 			return denied("会话创建失败")
 		}
-		out.SourceToken, err = a.unseal(encrypted)
-		if err != nil {
-			return denied("源站凭据不可用")
+		if !in.PublicImage {
+			out.SourceToken, err = a.unseal(encrypted)
+			if err != nil {
+				return denied("源站凭据不可用")
+			}
 		}
 	case "check", "charge":
 		var lease int
-		if err = tx.QueryRow("SELECT COUNT(*) FROM access_leases WHERE id=? AND account_id=? AND token_hash=? AND node_id=? AND expires_at>?", in.Lease, c.ID, Hash(in.Token), node, now.Unix()).Scan(&lease); err != nil || lease != 1 {
+		if err = tx.QueryRow("SELECT COUNT(*) FROM access_leases WHERE id=? AND account_id=? AND token_hash=? AND node_id=? AND expires_at>?", in.Lease, c.ID, leaseHash, node, now.Unix()).Scan(&lease); err != nil || lease != 1 {
 			return denied("播放授权已失效")
 		}
 		if _, err = tx.Exec("UPDATE access_leases SET expires_at=? WHERE id=?", now.Unix()+30, in.Lease); err != nil {

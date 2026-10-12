@@ -22,6 +22,24 @@ func accessToken(r *http.Request) string {
 	return requestAccessToken(r, false)
 }
 
+func hasAccessAuth(r *http.Request) bool {
+	for _, name := range []string{"Authorization", "X-Emby-Authorization", "X-MediaBrowser-Authorization", "X-Emby-Token", "X-MediaBrowser-Token", "Cookie"} {
+		if strings.TrimSpace(r.Header.Get(name)) != "" {
+			return true
+		}
+	}
+	for k, values := range r.URL.Query() {
+		if strings.EqualFold(k, "api_key") || strings.EqualFold(k, "X-Emby-Token") || strings.EqualFold(k, "access_token") || strings.EqualFold(k, "X-MediaBrowser-Token") {
+			for _, value := range values {
+				if value != "" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func requestAccessToken(r *http.Request, allowImageCookie bool) string {
 	values := []string{r.Header.Get("X-Emby-Token"), r.Header.Get("X-MediaBrowser-Token")}
 	for k, vs := range r.URL.Query() {
@@ -139,9 +157,13 @@ func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeR
 		return q, rr.gateway, done, false
 	}
 	if command.Token == "" {
-		diagnosticReason(q, "订阅：缺少代理登录 Token")
-		apiError(w, 401, "请使用分配的账号登录")
-		return q, nil, done, true
+		if (q.Method == "GET" || q.Method == "HEAD") && subscriptionImagePath.MatchString(q.URL.Path) && !hasAccessAuth(q) {
+			command.PublicImage, command.Target = true, q.URL.Path
+		} else {
+			diagnosticReason(q, "订阅：缺少代理登录 Token")
+			apiError(w, 401, "请使用分配的账号登录")
+			return q, nil, done, true
+		}
 	}
 	if strings.Contains(path, "/password") || strings.HasPrefix(path, "/auth/") {
 		apiError(w, 403, "源站账号管理不可通过订阅地址操作")
@@ -246,6 +268,12 @@ func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeR
 		q = q.WithContext(proxy.WithForcedMedia(requestContext))
 	}
 	replaceAccessAuth(q, out.SourceToken)
+	if command.PublicImage {
+		device := deviceRequestFields(q)
+		if device != (DeviceFields{}) {
+			q.Header.Set("X-Emby-Authorization", deviceAuthorization(device, ""))
+		}
+	}
 	if err := applyDeviceIdentity(q, out.DeviceIdentity, out.SourceToken); err != nil {
 		apiError(w, 400, err.Error())
 		return q, nil, done, true
