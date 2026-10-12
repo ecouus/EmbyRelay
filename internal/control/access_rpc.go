@@ -43,6 +43,8 @@ type AccessResult struct {
 	Target         string          `json:"target,omitempty"`
 }
 
+const streamAccessChunk = 1 << 20
+
 func denied(msg string) (AccessResult, error) { return AccessResult{}, fmt.Errorf("%s", msg) }
 func (a *App) accessCall(ctx context.Context, in AccessCommand) (AccessResult, error) {
 	if a.AgentMode {
@@ -97,7 +99,7 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 		leaseHash = Hash("public-image:" + in.KeyID)
 	}
 	if in.Action == "finish" {
-		if in.RefundBytes < 0 || in.RefundBytes > 256*1024 {
+		if in.RefundBytes < 0 || in.RefundBytes > streamAccessChunk {
 			return denied("invalid refund")
 		}
 		result, deleteErr := tx.Exec("DELETE FROM access_leases WHERE id=? AND account_id=? AND node_id=? AND token_hash=?", in.Lease, c.ID, node, leaseHash)

@@ -253,7 +253,7 @@ func (w *meterWriter) accessAllowance(n int) (int, error) {
 	credit := w.accessCredit
 	w.mu.Unlock()
 	if credit == 0 {
-		grant := 256 * 1024
+		grant := streamAccessChunk
 		for {
 			err := w.accessCharge(grant)
 			if err == nil {
