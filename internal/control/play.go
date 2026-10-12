@@ -169,14 +169,15 @@ func (a *App) play(w http.ResponseWriter, r *http.Request) {
 }
 
 type meterWriter struct {
-	responseStatus int
-	accessCharge   func(int) error
-	accessRefund   int64
-	accessCredit   int64
-	routeCredit    int64
-	stream         bool
-	connection     net.Conn
-	mu             sync.Mutex
+	responseStatus  int
+	accessCharge    func(int) error
+	accessRefund    int64
+	accessCredit    int64
+	routeCredit     int64
+	routeCreditDate string
+	stream          bool
+	connection      net.Conn
+	mu              sync.Mutex
 	http.ResponseWriter
 	app            *App
 	route          Route
@@ -242,10 +243,20 @@ func (w *meterWriter) chargeRoute(n int64) error {
 	ingress := w.pendingIngress
 	w.pendingIngress = 0
 	w.mu.Unlock()
-	e := w.app.Store.Charge(w.route.ID, w.route.DailyQuota, ingress, n)
+	charge := func() error {
+		if w.stream {
+			date, err := w.app.Store.reserveStreamTraffic(w.route.ID, w.route.DailyQuota, ingress, n)
+			if err == nil {
+				w.routeCreditDate = date
+			}
+			return err
+		}
+		return w.app.Store.Charge(w.route.ID, w.route.DailyQuota, ingress, n)
+	}
+	e := charge()
 	if errors.Is(e, ErrQuota) && w.app.AcquireQuota != nil && w.route.DailyQuota > 0 {
 		if e = w.app.AcquireQuota(w.ctx, w.route, n); e == nil {
-			e = w.app.Store.Charge(w.route.ID, w.route.DailyQuota, ingress, n)
+			e = charge()
 		}
 	}
 	if e != nil {
@@ -298,7 +309,9 @@ func (w *meterWriter) finishRouteCredit() {
 	w.routeCredit = 0
 	w.mu.Unlock()
 	if unused > 0 {
-		_ = w.app.Store.Charge(w.route.ID, 0, 0, -unused)
+		if err := w.app.Store.refundStreamTraffic(w.route.ID, w.routeCreditDate, unused); err != nil {
+			w.setStatus("quota_or_accounting_error")
+		}
 	}
 }
 
@@ -353,6 +366,7 @@ func (w *meterWriter) record(n, reserved int, credit bool) {
 	}
 	if w.stream {
 		w.routeCredit -= int64(n)
+		w.app.Store.consumeStreamTraffic(w.route.ID, w.routeCreditDate, int64(n))
 	}
 	if n < reserved {
 		if !w.stream {

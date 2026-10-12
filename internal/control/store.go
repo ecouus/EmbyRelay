@@ -55,6 +55,7 @@ type Key struct {
 	Enabled         bool   `json:"enabled"`
 }
 type Node struct {
+	TrafficAccounting     string `json:"traffic_accounting,omitempty"`
 	DeviceIdentitySupport bool   `json:"device_identity_support"`
 	SubscriptionSupport   bool   `json:"subscription_support"`
 	ConfigVersion         int64  `json:"config_version"`
@@ -88,9 +89,10 @@ type Traffic struct {
 	Egress  int64  `json:"egress_bytes"`
 }
 type Store struct {
-	AgentID string
-	DB      *database.DB
-	mu      sync.Mutex
+	AgentID        string
+	DB             *database.DB
+	mu             sync.Mutex
+	pendingTraffic map[string]int64
 }
 
 func ID() string {
@@ -329,7 +331,10 @@ var ErrQuota = errors.New("daily quota exhausted")
 func (s *Store) Charge(route string, quota, ingress, egress int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	date := time.Now().UTC().Format("2006-01-02")
+	return s.chargeAtLocked(route, quota, ingress, egress, time.Now().UTC().Format("2006-01-02"))
+}
+
+func (s *Store) chargeAtLocked(route string, quota, ingress, egress int64, date string) error {
 	tx, e := s.DB.Begin()
 	if e != nil {
 		return e
@@ -372,7 +377,48 @@ func (s *Store) Charge(route string, quota, ingress, egress int64) error {
 	}
 	return tx.Commit()
 }
+
+// ReserveStreamTraffic keeps quota charged in the database while excluding
+// unused in-flight credit from exported traffic. All three operations share the
+// traffic lock so heartbeat cannot observe the reservation without its offset.
+func (s *Store) reserveStreamTraffic(route string, quota, ingress, egress int64) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	date := time.Now().UTC().Format("2006-01-02")
+	if err := s.chargeAtLocked(route, quota, ingress, egress, date); err != nil {
+		return "", err
+	}
+	if s.pendingTraffic == nil {
+		s.pendingTraffic = map[string]int64{}
+	}
+	s.pendingTraffic[date+"/"+route] += egress
+	return date, nil
+}
+func (s *Store) consumeStreamTraffic(route, date string, sent int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := date + "/" + route
+	s.pendingTraffic[key] -= sent
+	if s.pendingTraffic[key] == 0 {
+		delete(s.pendingTraffic, key)
+	}
+}
+func (s *Store) refundStreamTraffic(route, date string, unused int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.chargeAtLocked(route, 0, 0, -unused, date); err != nil {
+		return err
+	}
+	key := date + "/" + route
+	s.pendingTraffic[key] -= unused
+	if s.pendingTraffic[key] == 0 {
+		delete(s.pendingTraffic, key)
+	}
+	return nil
+}
 func (s *Store) Traffic() ([]Traffic, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	rows, e := s.DB.Query("SELECT date,route_id,ingress_bytes,egress_bytes FROM traffic_daily ORDER BY date DESC LIMIT 1000")
 	if e != nil {
 		return nil, e
@@ -384,6 +430,7 @@ func (s *Store) Traffic() ([]Traffic, error) {
 		if e = rows.Scan(&x.Date, &x.RouteID, &x.Ingress, &x.Egress); e != nil {
 			return nil, e
 		}
+		x.Egress = max(int64(0), x.Egress-s.pendingTraffic[x.Date+"/"+x.RouteID])
 		out = append(out, x)
 	}
 	return out, rows.Err()

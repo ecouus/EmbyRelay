@@ -215,7 +215,7 @@ func (a *Agent) Sync(ctx context.Context) error {
 	if e != nil {
 		return e
 	}
-	return a.request(ctx, "POST", "/api/v1/agent/heartbeat", control.Heartbeat{DeviceIdentitySupport: true, SubscriptionSupport: true, Sessions: sessions, Traffic: traffic, Active: a.App.Active(), Version: a.version}, nil)
+	return a.request(ctx, "POST", "/api/v1/agent/heartbeat", control.Heartbeat{TrafficAccounting: "actual-v1", DeviceIdentitySupport: true, SubscriptionSupport: true, Sessions: sessions, Traffic: traffic, Active: a.App.Active(), Version: a.version}, nil)
 }
 
 // Upload independently of configuration and heartbeat reports so their failures

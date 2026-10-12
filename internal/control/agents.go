@@ -28,6 +28,7 @@ type SignedSnapshot struct {
 	Signature string `json:"signature"`
 }
 type Heartbeat struct {
+	TrafficAccounting     string    `json:"traffic_accounting,omitempty"`
 	DeviceIdentitySupport bool      `json:"device_identity_support"`
 	SubscriptionSupport   bool      `json:"subscription_support"`
 	Sessions              []Session `json:"sessions"`
@@ -276,6 +277,7 @@ func (a *App) agentAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if e := a.report(node, in); e != nil {
+			diagnosticReason(r, "Agent 心跳报告被拒绝："+e.Error())
 			apiError(w, 400, e.Error())
 			return
 		}
@@ -294,6 +296,13 @@ func (a *App) report(node Node, in Heartbeat) error {
 		return fmt.Errorf("node disabled or unavailable")
 	}
 	node = fresh
+	if in.TrafficAccounting != "" && in.TrafficAccounting != "actual-v1" {
+		return fmt.Errorf("unsupported traffic accounting mode")
+	}
+	if node.TrafficAccounting == "actual-v1" && in.TrafficAccounting != "actual-v1" {
+		return fmt.Errorf("traffic accounting mode cannot downgrade")
+	}
+	reconcile := in.TrafficAccounting == "actual-v1" && node.TrafficAccounting == ""
 	state := a.state.Load()
 	allowed := map[string]bool{}
 	for _, r := range state.snapshot.Routes {
@@ -321,16 +330,19 @@ func (a *App) report(node Node, in Heartbeat) error {
 		if e == nil {
 			json.Unmarshal([]byte(raw), &previous)
 		}
-		// A short downstream write refunds the bytes reserved before writing.
-		// Heartbeats can observe the reservation and then its small correction.
-		// Keep rejecting larger counter regressions caused by a restored Agent DB.
-		if t.Ingress < previous.Ingress || previous.Egress-t.Egress > 1<<20 {
+		// The first actual-v1 report reconciles legacy precharged counters.
+		// Subsequent reports still reject large regressions or database restores.
+		if t.Ingress < previous.Ingress || (!reconcile && previous.Egress-t.Egress > 1<<20) {
 			return fmt.Errorf("traffic counters cannot decrease; preserve agent database")
 		}
 		if _, e = tx.Exec("INSERT INTO traffic_daily VALUES(?,?,?,?) ON CONFLICT(date,route_id) DO UPDATE SET ingress_bytes=traffic_daily.ingress_bytes+excluded.ingress_bytes,egress_bytes=traffic_daily.egress_bytes+excluded.egress_bytes", t.Date, t.RouteID, t.Ingress-previous.Ingress, t.Egress-previous.Egress); e != nil {
 			return e
 		}
-		if _, e = tx.Exec("UPDATE quota_leases SET reported=MAX(reported,?) WHERE date=? AND route_id=? AND node_id=?", t.Egress, t.Date, t.RouteID, node.ID); e != nil {
+		quotaReportSQL := "UPDATE quota_leases SET reported=MAX(reported,?) WHERE date=? AND route_id=? AND node_id=?"
+		if reconcile {
+			quotaReportSQL = "UPDATE quota_leases SET reported=? WHERE date=? AND route_id=? AND node_id=?"
+		}
+		if _, e = tx.Exec(quotaReportSQL, t.Egress, t.Date, t.RouteID, node.ID); e != nil {
 			return e
 		}
 		if _, e = tx.Exec("INSERT INTO objects VALUES('relay_traffic',?,?,?) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload", id, string(Encode(t)), time.Now().Unix()); e != nil {
@@ -349,6 +361,7 @@ func (a *App) report(node Node, in Heartbeat) error {
 			return e
 		}
 	}
+	node.TrafficAccounting = in.TrafficAccounting
 	node.LastSeen = time.Now().Unix()
 	node.SubscriptionSupport = in.SubscriptionSupport
 	node.DeviceIdentitySupport = in.DeviceIdentitySupport
