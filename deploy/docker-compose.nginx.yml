@@ -1,0 +1,20 @@
+# Linux 宿主机 Nginx 专用：独立完整配置，不与基础 Compose 叠加。
+services:
+  embyrelay:
+    image: ecouus/embyrelay:latest
+    network_mode: host
+    environment:
+      RELAY_LISTEN: "127.0.0.1:6689"
+      RELAY_ADMIN_USER: "admin"
+      RELAY_ADMIN_PASSWORD: "CHANGE-ME-before-first-start"
+      RELAY_ALLOW_INSECURE: "false"
+      RELAY_TRUSTED_PROXIES: "127.0.0.1/32"
+    volumes:
+      - relay_data:/data
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    stop_grace_period: 15s
+volumes:
+  relay_data:

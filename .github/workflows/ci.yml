@@ -1,0 +1,44 @@
+name: verify
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: integration-test-only
+          POSTGRES_DB: embyrelay_test
+        ports:
+          - 15432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d embyrelay_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/install.sh scripts/install-agent.sh
+      - run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm --prefix web ci
+      - run: npm --prefix web run build
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: true
+      - run: go test -race ./...
+      - name: PostgreSQL behavior and migration tests
+        run: go test -race ./internal/control ./internal/database
+        env:
+          EMBYRELAY_TEST_POSTGRES_URL: postgres://postgres:integration-test-only@127.0.0.1:15432/embyrelay_test?sslmode=disable
+      - run: go vet ./...
+      - run: go build ./cmd/server && go build ./cmd/agent && go build ./cmd/dbmigrate

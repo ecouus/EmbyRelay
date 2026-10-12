@@ -1,0 +1,22 @@
+services:
+  agent:
+    image: ecouus/embyrelay:latest
+    entrypoint: ["/usr/local/bin/embyrelay-agent"]
+    network_mode: host
+    environment:
+      RELAY_LISTEN: "127.0.0.1:6689"
+      RELAY_TRUSTED_PROXIES: "127.0.0.1/32"
+      RELAY_CONTROL_URL: "https://relay.example.com"
+      RELAY_PUBLIC_URL: "https://node1.example.com"
+      RELAY_NODE_NAME: "relay-1"
+      RELAY_ENROLL_TOKEN: "" # 首次注册前填写控制台生成的令牌
+      RELAY_SERVER_KEY: "" # 填写控制台显示的签名公钥
+    volumes:
+      - agent_data:/data
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    stop_grace_period: 15s
+volumes:
+  agent_data:

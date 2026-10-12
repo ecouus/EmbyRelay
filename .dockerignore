@@ -1,0 +1,10 @@
+.git
+**/node_modules
+**/.env
+**/.env.*
+data
+agent-data
+bin
+artifacts
+coverage.out
+web/dist

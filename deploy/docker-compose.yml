@@ -1,0 +1,21 @@
+services:
+  embyrelay:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: ecouus/embyrelay:latest
+    environment:
+      RELAY_ADMIN_USER: "admin"
+      RELAY_ADMIN_PASSWORD: "CHANGE-ME-before-first-start" # 首次启动前改为独立强密码
+      RELAY_ALLOW_INSECURE: "true"
+    volumes:
+      - relay_data:/data
+    ports:
+      - "127.0.0.1:6689:6689"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    stop_grace_period: 15s
+volumes:
+  relay_data:
