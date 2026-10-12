@@ -219,6 +219,17 @@ func (a *App) portalSources(w http.ResponseWriter, c AccessAccount) {
 		apiError(w, 500, "读取失败")
 		return
 	}
+	nodes, e := list[Node](a.Store, "node")
+	if e != nil {
+		apiError(w, 500, "读取失败")
+		return
+	}
+	byNode := map[string]Node{}
+	for _, node := range nodes {
+		byNode[node.ID] = node
+	}
+	configVersion := a.state.Load().snapshot.Version
+	now := time.Now().Unix()
 	out := []map[string]any{}
 	for _, u := range us {
 		if u.OwnerAccountID != c.ID {
@@ -226,6 +237,7 @@ func (a *App) portalSources(w http.ResponseWriter, c AccessAccount) {
 		}
 		item := map[string]any{"id": u.ID, "name": u.Name, "base_url": u.BaseURL, "enabled": u.Enabled, "addresses": []string{}}
 		paths := []string{}
+		connections := []UserSourceAddress{}
 		for _, route := range rs {
 			if route.UpstreamID != u.ID || route.OwnerAccountID != c.ID || !route.Enabled {
 				continue
@@ -237,11 +249,15 @@ func (a *App) portalSources(w http.ResponseWriter, c AccessAccount) {
 						apiError(w, 500, "地址解密失败")
 						return
 					}
-					paths = append(paths, "/r/"+route.Alias+"/"+secret+"/")
+					path := "/r/" + route.Alias + "/" + secret + "/"
+					paths = append(paths, path)
+					origin, label := subscriptionAddressEntry(route, byNode, configVersion, now)
+					connections = append(connections, UserSourceAddress{RouteID: route.ID, RouteAlias: route.Alias, Path: path, Origin: origin, NodeID: route.RelayID, EntryLabel: label, Available: true})
 				}
 			}
 		}
 		item["addresses"] = paths
+		item["connection_addresses"] = connections
 		out = append(out, item)
 	}
 	writeJSON(w, 200, out)

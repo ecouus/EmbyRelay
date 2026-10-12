@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import ImportDetails from './ImportDetails.vue'
+import UserSources from './UserSources.vue'
 import {computed,onMounted,onUnmounted,ref,watch} from 'vue'
 import {NButton,NInput,NInputNumber,NSelect,NSwitch,NModal,NForm,NFormItem,NAlert,NDataTable,NTag} from 'naive-ui'
 const props=defineProps<{routes:any[];nodes:any[]}>()
@@ -41,6 +42,7 @@ const sessionColumns=[{title:'设备 / 客户端',key:'device',ellipsis:{tooltip
 <section class="panel"><div class="panel-heading"><div><h3>套餐</h3><span>修改套餐仅影响之后开通的账号</span></div><n-button @click="openPlan()">添加套餐</n-button></div><div class="subscription-grid"><article v-for="p in plans" :key="p.id" class="subscription-card"><h3>{{p.name}}</h3><p>{{p.duration_months?p.duration_months+' 个月':p.duration_days?p.duration_days+' 天':'有效期不限'}} · {{p.traffic_bytes?bytes(p.traffic_bytes):'不限流量'}}</p><p>{{p.traffic_period==='total'?'累计额度':p.traffic_period==='month'?'UTC 自然月重置':'每 '+p.period_days+' 天重置'}} · {{p.max_concurrent}} 路播放</p><n-button @click="openPlan(p)">编辑套餐</n-button></article></div></section>
 <n-modal :show="!!selected" @update:show="v=>{if(!v)selected=null}" preset="card" title="订阅详情" :style="{width:'720px',maxWidth:'calc(100vw - 32px)'}"><template v-if="selected"><h3>{{selected.account.username}} · {{status(selected.account)}}</h3><dl class="subscription-fields"><dt>生效时间</dt><dd>{{selected.account.started_at?date(selected.account.started_at):'待首次登录'}}</dd><dt>到期时间</dt><dd>{{date(selected.account.expires_at)}}</dd><dt>已用 / 剩余流量</dt><dd>{{bytes(selected.used_bytes)}} / {{selected.account.plan.traffic_bytes?bytes(Math.max(0,selected.account.plan.traffic_bytes-selected.used_bytes)):'不限'}}</dd><dt>限速 / 并发</dt><dd>{{selected.account.plan.rate_bps?selected.account.plan.rate_bps*8/1000000+' Mbps':'不限速'}} / {{selected.account.plan.max_concurrent}} 路</dd></dl>
 <div class="actions"><n-button type="primary" @click="openAction('renew')">续期</n-button><n-button @click="openAction('password')">重置登录密码</n-button><n-button @click="run(()=>action('status',{enabled:!selected.account.enabled}))">{{selected.account.enabled?'停用账号':'启用账号'}}</n-button><n-button @click="run(()=>action('revoke-sessions',{}))">撤销所有登录</n-button><n-button @click="run(()=>action('reset-usage',{}))">重置当前流量</n-button></div>
+<UserSources :key="selected.account.id" :account-id="selected.account.id" compact />
 <h3>登录会话</h3><n-data-table :columns="sessionColumns" :data="sessions" :table-layout="'fixed'" :pagination="{pageSize:5}" /><details v-for="s in sessions" :key="s.hash"><summary>{{s.client_ip}} · {{date(s.created_at)}}</summary><p style="overflow-wrap:anywhere">{{s.user_agent}}</p></details><n-alert v-if="error" type="error">{{error}}</n-alert></template></n-modal>
 <n-modal :show="!!modal" @update:show="v=>{if(!v)modal=''}" preset="card" :title="modal==='plan'?'配置套餐':modal==='account'?'开通访问账号':modal==='renew'?'手动续期':'重置登录密码'" :style="{width:'560px',maxWidth:'calc(100vw - 32px)'}">
 <n-form label-placement="top">

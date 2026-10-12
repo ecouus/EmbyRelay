@@ -189,3 +189,12 @@ GET 策略返回 `policy`、`default_policy` 和 `scope`（source/account/inheri
 - `POST /api/v1/agent/diagnostics`：沿用节点签名认证，提交 `records`，每批最多 100 条。控制端返回确认的 `ids`；记录按签名节点归属并去重，不允许请求体指定来源节点。该接口独立于心跳。
 - `GET /api/v1/diagnostics?node_id=节点ID`：按节点读取；`node_id=local` 为控制端，不传为全部节点。需要管理端登录。返回节点 ID/名称和脱敏诊断详情，每节点保留 1000 条。
 - Agent 本地队列仅在收到确认后标记上传，重启后继续补传。超过本地 1000 条保留上限的历史记录会淘汰。
+
+
+## 管理员查看用户自助源站
+
+`GET /api/v1/user-sources` 仅允许管理员登录，响应设置 `Cache-Control: no-store`。可传 `account_id` 只读取指定用户的源站。每项包含源站 `id/name/base_url/enabled`、所属用户 `owner_account_id/owner_username/owner_enabled`、`has_credentials`、固定掩码 `source_username_masked/source_password_masked` 及中转 `addresses`。该接口不解密源站凭据，不返回明文、密文或用户密码哈希。
+
+每个中转地址包含 `path/origin/entry_label/available/unavailable_reason`。空 `origin` 表示当前控制端入口；非空时为已就绪的指定节点 origin。复制时组合 origin 与 path，保留用户自己的密钥。已停用、已到期、密钥撤销及无法解密的地址会标记不可用。
+
+用户中心 `GET /api/v1/portal/sources` 保留原有相对 `addresses`，新增 `connection_addresses`，与管理员列表使用相同的入口选择逻辑。该接口仍只返回当前用户自己的源站。

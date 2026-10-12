@@ -286,6 +286,8 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, user User) {
 		a.devicePolicyAPI(w, r, user, r.URL.Query().Get("upstream_id"), id)
 	case resource == "access-plans" || resource == "access-accounts":
 		a.accessAdmin(w, r, user, resource, id, parts)
+	case p == "user-sources":
+		a.userSources(w, r, user)
 	case resource == "upstreams":
 		a.upstreams(w, r, user, id)
 	case resource == "routes":

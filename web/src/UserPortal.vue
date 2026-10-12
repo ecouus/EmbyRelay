@@ -19,7 +19,7 @@ async function logout(){await run(async()=>{await api('logout','POST',{});me.val
 function edit(s?:any){form.value=s?{id:s.id,name:s.name,base_url:s.base_url,emby_username:'',emby_password:''}:{name:'',base_url:'',emby_username:'',emby_password:''};modal.value=true}
 async function save(){await run(async()=>{const {id,...body}=form.value;if(id&&!body.emby_username)delete body.emby_username;if(id&&!body.emby_password)delete body.emby_password;await api('sources'+(id?'/'+id:''),id?'PATCH':'POST',body);modal.value=false;form.value={};await refresh();notice.value='源站已保存，所有地址共用账户额度'})}
 async function remove(s:any){if(!window.confirm('删除 '+s.name+'？该源站的中转地址会失效，已用流量保留。'))return;await run(async()=>{await api('sources/'+s.id,'DELETE');await refresh()})}
-function show(s:any){delivery.value=`名称：${s.name}\n源站地址：${s.base_url}\n中转服务器地址：${s.addresses.map((p:string)=>location.origin+p).join('\n')}\n登录用户名：${me.value.account.username}\n登录密码：使用你的用户中心密码\n所有地址共享账户流量和有效期；下载 1 GiB 按双向折算扣除 2 GiB。`}
+function show(s:any){const addresses=s.connection_addresses?.length?s.connection_addresses.map((a:any)=>(a.origin||location.origin).replace(/\/$/,'')+a.path):s.addresses.map((p:string)=>location.origin+p);delivery.value=`名称：${s.name}\n源站地址：${s.base_url}\n中转服务器地址：${addresses.join('\n')}\n登录用户名：${me.value.account.username}\n登录密码：使用你的用户中心密码\n所有地址共享账户流量和有效期；下载 1 GiB 按双向折算扣除 2 GiB。`}
 let timer:ReturnType<typeof setInterval>|undefined
 onMounted(async()=>{try{await refresh()}catch{}timer=setInterval(()=>{if(me.value&&!busy.value&&!modal.value)refresh().catch(e=>error.value=e.message)},15000)})
 onUnmounted(()=>clearInterval(timer))
