@@ -346,6 +346,9 @@ func (b *deadlineBody) Read(p []byte) (int, error) {
 // Some players append a root-relative PlaybackInfo URL to their /emby base.
 func normalizePlaybackPath(path, prefix string) string {
 	path = strings.TrimPrefix(path, prefix)
+	// Clients can join a base URL ending in / with an /emby API path.
+	// Normalize only leading separators; preserve escaped and interior paths.
+	path = "/" + strings.TrimLeft(path, "/")
 	for {
 		if strings.HasPrefix(path, prefix+"/") {
 			path = strings.TrimPrefix(path, prefix)
@@ -355,8 +358,5 @@ func normalizePlaybackPath(path, prefix string) string {
 			break
 		}
 	}
-	if path == "" {
-		return "/"
-	}
-	return path
+	return "/" + strings.TrimLeft(path, "/")
 }

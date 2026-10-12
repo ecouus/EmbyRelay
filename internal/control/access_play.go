@@ -63,7 +63,10 @@ func mediaRequest(r *http.Request) bool {
 }
 func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeRoute, key Key, mw *meterWriter, prefix string, cancel context.CancelFunc) (*http.Request, *proxy.Gateway, func(), bool) {
 	done := func() {}
-	path := strings.ToLower(strings.TrimPrefix(q.URL.Path, "/emby"))
+	path := strings.ToLower(q.URL.Path)
+	if strings.HasPrefix(path, "/emby/") {
+		path = strings.TrimPrefix(path, "/emby")
+	}
 	command := AccessCommand{AccountID: key.AccountID, KeyID: key.ID, Token: accessToken(q)}
 	if path == "/users/public" && q.Method == "GET" {
 		writeJSON(w, 200, []any{})

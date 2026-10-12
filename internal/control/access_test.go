@@ -381,3 +381,38 @@ func TestSubscriptionCleanupRemovesRevokedTargets(t *testing.T) {
 		t.Fatal("revoked media target retained", count, err)
 	}
 }
+
+func TestSubscriptionLoginWithLeadingSlashes(t *testing.T) {
+	a, _, _, prefix := subscriptionFixture(t)
+	for _, path := range []string{"//emby/Users/AuthenticateByName", "///Users/AuthenticateByName", "/Emby/Users/AuthenticateByName"} {
+		t.Run(path, func(t *testing.T) {
+			bad := call(t, a, nil, "POST", prefix+path, map[string]string{"Username": "viewer", "Pw": "wrong-pass"})
+			if bad.Code != 401 || !strings.Contains(bad.Body.String(), "用户名或密码错误") {
+				t.Fatalf("wrong password bypassed login validation: %d %s", bad.Code, bad.Body.String())
+			}
+			login := call(t, a, nil, "POST", prefix+path, map[string]string{"Username": "viewer", "Pw": "viewer-password"})
+			if login.Code != 200 {
+				t.Fatalf("login: %d %s", login.Code, login.Body.String())
+			}
+			var data map[string]any
+			if err := json.Unmarshal(login.Body.Bytes(), &data); err != nil {
+				t.Fatal(err)
+			}
+			token, _ := data["AccessToken"].(string)
+			if token == "" || token == "source-secret-token" || strings.Contains(login.Body.String(), "source-secret-token") {
+				t.Fatal("missing proxy token or leaked source token")
+			}
+			request := httptest.NewRequest("GET", prefix+"//Videos/1/stream", nil)
+			request.Header.Set("X-Emby-Token", token)
+			response := httptest.NewRecorder()
+			a.ServeHTTP(response, request)
+			if response.Code != 200 || response.Body.Len() != 1024 {
+				t.Fatalf("playback: %d %s", response.Code, response.Body.String())
+			}
+			anonymous := call(t, a, nil, "GET", prefix+"//Videos/1/stream", nil)
+			if anonymous.Code != 401 {
+				t.Fatalf("anonymous media accepted: %d", anonymous.Code)
+			}
+		})
+	}
+}
