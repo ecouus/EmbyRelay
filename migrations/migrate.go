@@ -9,7 +9,7 @@ import (
 //go:embed *.sql postgres/*.sql
 var files embed.FS
 
-const CurrentVersion = 12
+const CurrentVersion = 13
 
 // ApplyPostgres has independent SQL files but the same schema version as SQLite.
 // A transaction-scoped advisory lock prevents simultaneous startup migrations.
@@ -48,7 +48,7 @@ func ApplyPostgres(db *sql.DB) error {
 		{1, "001_initial.sql"}, {2, "002_runtime_indexes.sql"}, {3, "003_diagnostics.sql"},
 		{4, "004_diagnostics_detail.sql"}, {5, "005_diagnostic_context.sql"}, {6, "006_session_clients.sql"},
 		{7, "007_access_subscriptions.sql"}, {8, "008_self_service.sql"}, {9, "009_device_identity.sql"}, {10, "010_agent_diagnostics.sql"}, {11, "011_cleanup_indexes.sql"},
-		{12, "012_usage_retention.sql"},
+		{12, "012_usage_retention.sql"}, {13, "013_detach_deleted_routes.sql"},
 	} {
 		if version >= m.version {
 			continue
@@ -91,7 +91,7 @@ func Apply(db *sql.DB) error {
 	for _, migration := range []struct {
 		version int
 		name    string
-	}{{1, "001_initial.sql"}, {2, "002_runtime_indexes.sql"}, {3, "003_diagnostics.sql"}, {4, "004_diagnostics_detail.sql"}, {5, "005_diagnostic_context.sql"}, {6, "006_session_clients.sql"}, {7, "007_access_subscriptions.sql"}, {8, "008_self_service.sql"}, {9, "009_device_identity.sql"}, {10, "010_agent_diagnostics.sql"}, {11, "011_cleanup_indexes.sql"}, {12, "012_usage_retention.sql"}} {
+	}{{1, "001_initial.sql"}, {2, "002_runtime_indexes.sql"}, {3, "003_diagnostics.sql"}, {4, "004_diagnostics_detail.sql"}, {5, "005_diagnostic_context.sql"}, {6, "006_session_clients.sql"}, {7, "007_access_subscriptions.sql"}, {8, "008_self_service.sql"}, {9, "009_device_identity.sql"}, {10, "010_agent_diagnostics.sql"}, {11, "011_cleanup_indexes.sql"}, {12, "012_usage_retention.sql"}, {13, "013_detach_deleted_routes.sql"}} {
 		if version >= migration.version {
 			continue
 		}

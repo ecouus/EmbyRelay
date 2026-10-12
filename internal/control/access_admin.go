@@ -135,6 +135,35 @@ func (a *App) accessAdmin(w http.ResponseWriter, r *http.Request, user User, res
 			apiError(w, 500, "storage unavailable")
 			return
 		}
+		routes, e := list[Route](a.Store, "route")
+		if e != nil {
+			apiError(w, 500, "storage unavailable")
+			return
+		}
+		nodes, e := list[Node](a.Store, "node")
+		if e != nil {
+			apiError(w, 500, "storage unavailable")
+			return
+		}
+		byRoute := map[string]Route{}
+		byNode := map[string]Node{}
+		for _, route := range routes {
+			byRoute[route.ID] = route
+		}
+		for _, node := range nodes {
+			byNode[node.ID] = node
+		}
+		sources, e := list[Upstream](a.Store, "upstream")
+		if e != nil {
+			apiError(w, 500, "storage unavailable")
+			return
+		}
+		sourceCounts := map[string]int{}
+		for _, source := range sources {
+			if source.OwnerAccountID != "" {
+				sourceCounts[source.OwnerAccountID]++
+			}
+		}
 		out := []map[string]any{}
 		usedByAccount := map[string]int64{}
 		for start := 0; start < len(cs); start += 100 {
@@ -174,7 +203,12 @@ func (a *App) accessAdmin(w http.ResponseWriter, r *http.Request, user User, res
 			if c.ExpiresAt > 0 {
 				remaining = max(int64(0), (c.ExpiresAt-time.Now().Unix()+86399)/86400)
 			}
-			out = append(out, map[string]any{"account": c, "used_bytes": used, "remaining_days": remaining, "next_reset_at": next})
+			route, assigned := byRoute[c.RouteID]
+			origin, entry := "", ""
+			if assigned {
+				origin, entry = subscriptionAddressEntry(route, byNode, a.state.Load().snapshot.Version, time.Now().Unix())
+			}
+			out = append(out, map[string]any{"account": c, "used_bytes": used, "remaining_days": remaining, "next_reset_at": next, "route_alias": route.Alias, "route_origin": origin, "route_entry_label": entry, "user_source_count": sourceCounts[c.ID]})
 		}
 		writeJSON(w, 200, out)
 		return

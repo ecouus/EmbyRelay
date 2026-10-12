@@ -146,3 +146,7 @@ EMBYRELAY_DOCKER_TEST=1 EMBYRELAY_TEST_IMAGE=embyrelay:postgres-test \
 ```
 
 容器测试覆盖实际 PostgreSQL 部署、备份恢复、密码重置和 SQLite 迁移中断重试，结束后删除临时容器与数据卷。测试在 Docker Desktop 下使用 bridge 网络，生产安装器保持 host 网络。
+
+## 已删除路由的账号绑定
+
+数据库迁移 v13 清理指向不存在路由的账号绑定与对应独立源站凭据，保留套餐、账号密码、有效期和流量记录。删除路由会同步解除账号绑定、删除路由密钥并撤销该路由登录会话；用户自助添加的其他源站和路由不受影响。

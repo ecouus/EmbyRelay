@@ -242,7 +242,7 @@ func TestUsageRetentionSchemaUpgrade(t *testing.T) {
 		"ALTER TABLE access_leases DROP COLUMN charged_cycle",
 		"ALTER TABLE access_leases DROP COLUMN charged_bytes",
 		"CREATE TABLE relay_reports(node_id TEXT NOT NULL,report_id TEXT NOT NULL,created_at BIGINT NOT NULL,PRIMARY KEY(node_id,report_id))",
-		"DELETE FROM schema_migrations WHERE version=12",
+		"DELETE FROM schema_migrations WHERE version>=12",
 		"INSERT INTO access_usage VALUES('account','old-cycle',123456789)",
 		"INSERT INTO access_leases VALUES('legacy','account','hash','node',9999999999,1)",
 		"INSERT INTO relay_reports VALUES('node','report',1)",

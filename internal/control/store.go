@@ -251,12 +251,50 @@ func (s *Store) remove(kind, id, actor string) error {
 		}
 	}
 	if kind == "route" {
+		rows, err := tx.Query("SELECT id FROM objects WHERE kind='access_account' AND json_extract(payload,'$.route_id')=? ORDER BY id", id)
+		if err != nil {
+			return err
+		}
+		var accountIDs []string
+		for rows.Next() {
+			var accountID string
+			if err = rows.Scan(&accountID); err != nil {
+				rows.Close()
+				return err
+			}
+			accountIDs = append(accountIDs, accountID)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		for _, accountID := range accountIDs {
+			account, err := loadAccount(tx, accountID)
+			if err != nil {
+				return err
+			}
+			if account.RouteID != id {
+				continue
+			}
+			account.RouteID, account.KeyID, account.Credentials = "", "", ""
+			if err = saveAccount(tx, account); err != nil {
+				return err
+			}
+		}
+		if _, e = tx.Exec("DELETE FROM access_tokens WHERE key_id IN (SELECT id FROM objects WHERE kind='key' AND json_extract(payload,'$.route_id')=?)", id); e != nil {
+			return e
+		}
 		if _, e = tx.Exec("DELETE FROM objects WHERE kind='key' AND json_extract(payload,'$.route_id')=?", id); e != nil {
 			return e
 		}
 	}
-	tx.Exec("UPDATE settings SET value=CAST(value AS INTEGER)+1 WHERE key='version'")
-	tx.Exec("INSERT INTO audit_logs(actor_id,action,target,created_at) VALUES(?,?,?,?)", actor, "delete_"+kind, id, time.Now().Unix())
+	if _, e = tx.Exec("UPDATE settings SET value=CAST(value AS INTEGER)+1 WHERE key='version'"); e != nil {
+		return e
+	}
+	if _, e = tx.Exec("INSERT INTO audit_logs(actor_id,action,target,created_at) VALUES(?,?,?,?)", actor, "delete_"+kind, id, time.Now().Unix()); e != nil {
+		return e
+	}
 	return tx.Commit()
 }
 func (s *Store) Snapshot() (Snapshot, error) {
