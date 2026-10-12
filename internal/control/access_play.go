@@ -14,8 +14,15 @@ import (
 )
 
 var tokenAttribute = regexp.MustCompile(`(?i)Token\s*=\s*"([^"]*)"`)
+var subscriptionImagePath = regexp.MustCompile(`(?i)^/(?:emby/)?(?:items|users)/[a-z0-9_-]+/images/(?:primary|art|backdrop|banner|logo|thumb|disc|box|boxrear|menu|screenshot)(?:/[0-9]+)?/?$`)
+
+const subscriptionCookie = "relay_access"
 
 func accessToken(r *http.Request) string {
+	return requestAccessToken(r, false)
+}
+
+func requestAccessToken(r *http.Request, allowImageCookie bool) string {
 	values := []string{r.Header.Get("X-Emby-Token"), r.Header.Get("X-MediaBrowser-Token")}
 	for k, vs := range r.URL.Query() {
 		if strings.EqualFold(k, "api_key") || strings.EqualFold(k, "X-Emby-Token") || strings.EqualFold(k, "access_token") {
@@ -38,6 +45,18 @@ func accessToken(r *http.Request) string {
 				return ""
 			}
 			token = v
+		}
+	}
+	// Explicit tokens always take precedence; conflicting explicit tokens must
+	// never be rescued by a cookie. Cookie fallback is limited to image reads.
+	if token == "" && allowImageCookie && (r.Method == "GET" || r.Method == "HEAD") && subscriptionImagePath.MatchString(r.URL.Path) {
+		for _, cookie := range r.Cookies() {
+			if cookie.Name == subscriptionCookie && cookie.Value != "" {
+				if token != "" && token != cookie.Value {
+					return ""
+				}
+				token = cookie.Value
+			}
 		}
 	}
 	return token
@@ -67,7 +86,7 @@ func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeR
 	if strings.HasPrefix(path, "/emby/") {
 		path = strings.TrimPrefix(path, "/emby")
 	}
-	command := AccessCommand{AccountID: key.AccountID, KeyID: key.ID, Token: accessToken(q)}
+	command := AccessCommand{AccountID: key.AccountID, KeyID: key.ID, Token: requestAccessToken(q, true)}
 	if path == "/users/public" && q.Method == "GET" {
 		writeJSON(w, 200, []any{})
 		return q, nil, done, true
@@ -102,12 +121,21 @@ func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeR
 		} else {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "no-store")
+			if out.Token != "" {
+				http.SetCookie(w, &http.Cookie{Name: subscriptionCookie, Value: out.Token, Path: prefix + "/", HttpOnly: true, Secure: a.SecureCookies, SameSite: http.SameSiteLaxMode, MaxAge: 30 * 24 * 60 * 60})
+			}
 			w.Write(out.Payload)
 		}
 		return q, nil, done, true
 	}
-	if (path == "/system/info/public" || path == "/branding/configuration") && q.Method == "GET" {
+	if (path == "/system/info/public" || path == "/branding/configuration" || path == "/system/ping") && (q.Method == "GET" || q.Method == "HEAD") {
+		// Emby authorization headers also carry client/device metadata. Public
+		// discovery must not forward a token, but still needs those fields.
+		device := deviceRequestFields(q)
 		replaceAccessAuth(q, "")
+		if device != (DeviceFields{}) {
+			q.Header.Set("X-Emby-Authorization", deviceAuthorization(device, ""))
+		}
 		return q, rr.gateway, done, false
 	}
 	if command.Token == "" {
@@ -125,6 +153,7 @@ func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeR
 		if e != nil {
 			apiError(w, 401, e.Error())
 		} else {
+			http.SetCookie(w, &http.Cookie{Name: subscriptionCookie, Path: prefix + "/", HttpOnly: true, Secure: a.SecureCookies, SameSite: http.SameSiteLaxMode, MaxAge: -1})
 			w.WriteHeader(204)
 		}
 		return q, nil, done, true

@@ -26,8 +26,24 @@ func subscriptionFixture(t *testing.T) (*App, *http.Cookie, AccessAccount, strin
 				t.Error("wrong source credentials")
 			}
 			writeJSON(w, 200, map[string]any{"AccessToken": "source-secret-token", "User": map[string]any{"Id": "source-user-id", "Name": "real-user", "Policy": map[string]bool{"IsAdministrator": false}}})
-		case "/System/Info/Public":
+		case "/System/Info/Public", "/emby/System/Info/Public", "/emby/Branding/Configuration", "/emby/System/Ping":
+			if r.Header.Get("X-Test-Require-Client") == "true" {
+				fields := deviceRequestFields(r)
+				if fields != (DeviceFields{ID: "phone", Name: "Phone", Client: "Lenna", Version: "1"}) {
+					http.Error(w, "client metadata required", 403)
+					return
+				}
+				if accessToken(r) != "" || r.Header.Get("Cookie") != "" {
+					t.Error("authentication leaked into public discovery")
+				}
+			}
 			writeJSON(w, 200, map[string]string{"ServerName": "Test", "Id": "test"})
+		case "/emby/Items/1/Images/Primary":
+			if r.Header.Get("X-Emby-Token") != "source-secret-token" || r.Header.Get("Cookie") != "" {
+				t.Error("image authorization missing or proxy cookie leaked")
+			}
+			w.Header().Set("Content-Type", "image/png")
+			w.Write([]byte("test-image"))
 		case "/Videos/slow/stream":
 			w.Write([]byte("start"))
 			w.(http.Flusher).Flush()
@@ -72,6 +88,26 @@ func subscriptionFixture(t *testing.T) (*App, *http.Cookie, AccessAccount, strin
 	json.Unmarshal(w.Body.Bytes(), &result)
 	cs, _ := list[AccessAccount](a.Store, "access_account")
 	return a, cookie, cs[0], "/r/sub/" + result["access_key"]
+}
+
+func TestSubscriptionPublicDiscoveryPreservesClientWithoutToken(t *testing.T) {
+	a, _, _, prefix := subscriptionFixture(t)
+	for _, path := range []string{"/emby/System/Info/Public", "/emby/Branding/Configuration", "/emby/System/Ping"} {
+		for _, header := range []string{"Authorization", "X-Emby-Authorization", "X-MediaBrowser-Authorization"} {
+			t.Run(path+header, func(t *testing.T) {
+				r := httptest.NewRequest("GET", prefix+path+"?api_key=stale-token", nil)
+				r.Header.Set(header, deviceAuthorization(DeviceFields{ID: "phone", Name: "Phone", Client: "Lenna", Version: "1"}, "stale-token"))
+				r.Header.Set("X-Emby-Token", "stale-token")
+				r.Header.Set("Cookie", "untrusted=secret")
+				r.Header.Set("X-Test-Require-Client", "true")
+				w := httptest.NewRecorder()
+				a.ServeHTTP(w, r)
+				if w.Code != 200 {
+					t.Fatalf("public discovery failed: %d %s", w.Code, w.Body.String())
+				}
+			})
+		}
+	}
 }
 func subscriptionLogin(t *testing.T, a *App, prefix string) string {
 	t.Helper()

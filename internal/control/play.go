@@ -122,7 +122,7 @@ func (a *App) play(w http.ResponseWriter, r *http.Request) {
 	q.RequestURI = ""
 	q.Header.Del("Cookie")
 	for _, cookie := range r.Cookies() {
-		if cookie.Name != "relay_session" && cookie.Name != "relay_portal" {
+		if cookie.Name != "relay_session" && cookie.Name != "relay_portal" && (cookie.Name != subscriptionCookie || accessKey.AccountID != "") {
 			q.AddCookie(cookie)
 		}
 	}
