@@ -54,11 +54,11 @@ func TestStreamMeterUsesLargerSubscriptionCharges(t *testing.T) {
 		usage: &routeRuntime{}, ctx: context.Background(), stream: true,
 		accessCharge: func(n int) error { charges = append(charges, n); return nil },
 	}
-	for i := 0; i < 64; i++ {
-		if n, err := w.Write(bytes.Repeat([]byte("x"), 32*1024)); err != nil || n != 32*1024 {
+	for i := 0; i < 41; i++ {
+		if n, err := w.Write(bytes.Repeat([]byte("x"), 256*1024)); err != nil || n != 256*1024 {
 			t.Fatalf("wrote %d: %v", n, err)
 		}
-		if i == 0 && w.accessCredit != streamAccessChunk-32*1024 {
+		if i == 0 && w.accessCredit != streamAccessChunk-256*1024 {
 			t.Fatalf("unused credit = %d", w.accessCredit)
 		}
 	}
@@ -71,6 +71,7 @@ func TestStreamMeterShrinksChargeNearQuota(t *testing.T) {
 	a, admin := testApp(t)
 	route, _ := configured(t, a, admin, "http://127.0.0.1:8096")
 	var charges []int
+	var granted int
 	w := &meterWriter{
 		ResponseWriter: httptest.NewRecorder(), app: a, route: route,
 		usage: &routeRuntime{}, ctx: context.Background(), stream: true,
@@ -79,19 +80,15 @@ func TestStreamMeterShrinksChargeNearQuota(t *testing.T) {
 			if n > 64*1024 {
 				return fmt.Errorf("本周期剩余流量不足")
 			}
+			granted += n
 			return nil
 		},
 	}
 	if n, err := w.Write(bytes.Repeat([]byte("x"), 128*1024)); err != nil || n != 128*1024 {
 		t.Fatalf("wrote %d: %v", n, err)
 	}
-	if len(charges) != 10 {
+	if len(charges) == 0 || charges[0] != streamAccessChunk || granted < 128*1024 || granted >= 128*1024+64*1024 {
 		t.Fatalf("charges = %v", charges)
-	}
-	for i, want := range []int{streamAccessChunk, 512 * 1024, 256 * 1024, 128 * 1024, 64 * 1024, streamAccessChunk, 512 * 1024, 256 * 1024, 128 * 1024, 64 * 1024} {
-		if charges[i] != want {
-			t.Fatalf("charges = %v", charges)
-		}
 	}
 }
 

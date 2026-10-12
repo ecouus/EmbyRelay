@@ -43,7 +43,7 @@ type AccessResult struct {
 	Target         string          `json:"target,omitempty"`
 }
 
-const streamAccessChunk = 1 << 20
+const streamAccessChunk = 10 << 20
 
 func denied(msg string) (AccessResult, error) { return AccessResult{}, fmt.Errorf("%s", msg) }
 func (a *App) accessCall(ctx context.Context, in AccessCommand) (AccessResult, error) {
@@ -204,7 +204,7 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 			return denied("授权续期失败")
 		}
 		if in.Action == "charge" {
-			if in.Bytes < 0 || in.Bytes > 1<<20 {
+			if in.Bytes < 0 || in.Bytes > streamAccessChunk {
 				return denied("invalid charge")
 			}
 			// Subscription billing estimates source ingress plus client egress.

@@ -253,7 +253,19 @@ func TestSubscriptionFinishRefundsPartialChunkOnce(t *testing.T) {
 	if _, err = a.accessCall(context.Background(), cmd); err != nil {
 		t.Fatal(err)
 	}
+	cmd.Bytes = streamAccessChunk + 1
+	if _, err = a.accessCall(context.Background(), cmd); err == nil || err.Error() != "invalid charge" {
+		t.Fatalf("oversized charge: %v", err)
+	}
+	cmd.Bytes = streamAccessChunk
+	if _, err = a.accessCall(context.Background(), cmd); err == nil || err.Error() != "本周期剩余流量不足" {
+		t.Fatalf("charge boundary: %v", err)
+	}
 	cmd.Action = "finish"
+	cmd.RefundBytes = streamAccessChunk + 1
+	if _, err = a.accessCall(context.Background(), cmd); err == nil || err.Error() != "invalid refund" {
+		t.Fatalf("oversized refund: %v", err)
+	}
 	cmd.RefundBytes = 16 * 1024
 	if _, err = a.accessCall(context.Background(), cmd); err != nil {
 		t.Fatal(err)
