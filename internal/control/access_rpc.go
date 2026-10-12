@@ -106,7 +106,7 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 			n, _ := result.RowsAffected()
 			if n > 0 {
 				cycle, _ := accountCycle(c, now)
-				_, err = tx.Exec("UPDATE access_usage SET bytes=MAX(0,bytes-?) WHERE account_id=? AND cycle=?", in.RefundBytes*2, c.ID, cycle)
+				_, err = tx.Exec("UPDATE access_usage SET bytes=CASE WHEN bytes>=? THEN bytes-? ELSE 0 END WHERE account_id=? AND cycle=?", in.RefundBytes*2, in.RefundBytes*2, c.ID, cycle)
 			}
 		}
 		if err == nil && in.Status >= 100 && in.Status <= 599 {
