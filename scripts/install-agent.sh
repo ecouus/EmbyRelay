@@ -21,9 +21,9 @@ from urllib.parse import urlsplit
 
 
 def ask(label, default=''):
-    with open('/dev/tty', 'r+') as tty:
-        tty.write(label + (f' [{default}]' if default else '') + ': ')
-        tty.flush()
+    with open('/dev/tty', 'r') as tty, open('/dev/tty', 'w') as output:
+        output.write(label + (f' [{default}]' if default else '') + ': ')
+        output.flush()
         value = tty.readline()
         if not value:
             raise ValueError('没有交互输入，请通过命令参数提供配置')
@@ -260,7 +260,7 @@ def setup_nginx(compose, directory, path, config):
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     if not valid:
         print('通过 Certbot nginx 插件申请/续签证书；需同意 Let’s Encrypt 服务条款。')
-        with open('/dev/tty', 'r+') as tty:
+        with open('/dev/tty', 'r') as tty:
             run(['certbot', 'certonly', '--nginx', '--cert-name', host, '-d', host,
                  '--keep-until-expiring'], stdin=tty)
     else:

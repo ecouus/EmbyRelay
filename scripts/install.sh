@@ -37,9 +37,9 @@ POSTGRES_IMAGE = 'postgres:17-alpine'
 
 
 def ask(label, default=''):
-    with open('/dev/tty', 'r+') as tty:
-        tty.write(label + (f' [{default}]' if default else '') + ': ')
-        tty.flush()
+    with open('/dev/tty', 'r') as tty, open('/dev/tty', 'w') as output:
+        output.write(label + (f' [{default}]' if default else '') + ': ')
+        output.flush()
         value = tty.readline()
         if not value:
             raise ValueError('输入已中断')
@@ -47,7 +47,7 @@ def ask(label, default=''):
 
 
 def password():
-    with open('/dev/tty', 'r+') as tty:
+    with open('/dev/tty', 'w') as tty:
         first = getpass.getpass('管理员密码（8–72 字节，不回显）: ', stream=tty)
         second = getpass.getpass('再次输入密码: ', stream=tty)
     if first != second:
@@ -595,7 +595,7 @@ def setup_nginx(compose, directory, path, config):
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     if not valid:
         print('通过 Certbot nginx 插件申请/续签证书；需同意 Let’s Encrypt 服务条款。')
-        with open('/dev/tty', 'r+') as tty:
+        with open('/dev/tty', 'r') as tty:
             run(['certbot', 'certonly', '--nginx', '--cert-name', host, '-d', host,
                  '--keep-until-expiring'], stdin=tty)
     else:
