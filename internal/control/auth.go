@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -54,7 +55,7 @@ func (l *loginLimiter) fail(scope, ip, username string) {
 		l.entries = map[string]limiterEntry{}
 	}
 	now := time.Now()
-	for _, key := range limiterKeys(scope, ip, username) {
+	for _, key := range limiterFailureKeys(scope, ip, username) {
 		entry := l.entries[key]
 		if now.Sub(entry.Since) > 5*time.Minute {
 			entry = limiterEntry{Since: now}
@@ -81,6 +82,37 @@ func limiterKeys(scope, ip, username string) []string {
 		keys = append(keys, scope+":user-ip:"+strings.ToLower(username)+"@"+ip)
 	}
 	return keys
+}
+func limiterFailureKeys(scope, ip, username string) []string {
+	keys := limiterKeys(scope, ip, username)
+	if username != "" {
+		keys = append(keys, scope+":user:"+strings.ToLower(username))
+	}
+	return keys
+}
+
+// Global username failures delay only failed responses, never valid credentials.
+func (l *loginLimiter) failureDelay(scope, username string) time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry := l.entries[scope+":user:"+strings.ToLower(username)]
+	if username == "" || time.Since(entry.Since) > 5*time.Minute || entry.Count <= 50 {
+		return 0
+	}
+	steps := min(8, 1+(entry.Count-51)/10)
+	return time.Duration(steps) * 250 * time.Millisecond
+}
+func (l *loginLimiter) waitFailure(ctx context.Context, scope, username string) {
+	delay := l.failureDelay(scope, username)
+	if delay == 0 {
+		return
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
 }
 func loginAuditTarget(username, ip string) string {
 	if len(username) > 80 {
@@ -127,6 +159,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 func apiError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+func authExpired(w http.ResponseWriter, msg string) {
+	writeJSON(w, http.StatusUnauthorized, map[string]string{"error": msg, "code": "auth_expired"})
 }
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
@@ -187,6 +222,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	ok := bcrypt.CompareHashAndPassword([]byte(hash), []byte(in.Password)) == nil
 	if e != nil || !ok {
 		a.limiter.fail("admin", ip, in.Username)
+		a.limiter.waitFailure(r.Context(), "admin", in.Username)
 		a.Store.Audit("anonymous", "login_failed", loginAuditTarget(in.Username, ip))
 		apiError(w, 401, "invalid credentials")
 		return
@@ -198,6 +234,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		}
 		if !a.consumeTOTP(u.ID, u.TOTP, in.Code) {
 			a.limiter.fail("admin", ip, in.Username)
+			a.limiter.waitFailure(r.Context(), "admin", in.Username)
 			a.Store.Audit("anonymous", "login_failed", loginAuditTarget(in.Username, ip))
 			apiError(w, http.StatusUnauthorized, "invalid credentials")
 			return

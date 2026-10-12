@@ -19,10 +19,7 @@ export async function requestAPI(path: string, method = 'GET', body?: unknown) {
   })
   const data = await parseApiJSON(response)
   const portal = path.startsWith('/api/v1/portal/')
-  const expired = portal
-    ? ['请登录用户中心', '请重新登录', '账号不可用'].includes(data.error)
-    : data.error === 'authentication required'
-  if (response.status === 401 && expired) {
+  if (response.status === 401 && data.code === 'auth_expired') {
     window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT, {detail:{scope:portal?'portal':'admin'}}))
   }
   return {response, data}

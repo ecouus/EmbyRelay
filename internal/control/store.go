@@ -92,6 +92,7 @@ type Store struct {
 	AgentID        string
 	DB             *database.DB
 	mu             sync.Mutex
+	pendingMu      sync.Mutex
 	pendingTraffic map[string]int64
 }
 
@@ -379,8 +380,8 @@ func (s *Store) chargeAtLocked(route string, quota, ingress, egress int64, date 
 }
 
 // ReserveStreamTraffic keeps quota charged in the database while excluding
-// unused in-flight credit from exported traffic. All three operations share the
-// traffic lock so heartbeat cannot observe the reservation without its offset.
+// unused in-flight credit from exported traffic. Database updates and exports
+// take mu before pendingMu; consuming credit only takes the short memory lock.
 func (s *Store) reserveStreamTraffic(route string, quota, ingress, egress int64) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -388,6 +389,8 @@ func (s *Store) reserveStreamTraffic(route string, quota, ingress, egress int64)
 	if err := s.chargeAtLocked(route, quota, ingress, egress, date); err != nil {
 		return "", err
 	}
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
 	if s.pendingTraffic == nil {
 		s.pendingTraffic = map[string]int64{}
 	}
@@ -395,8 +398,8 @@ func (s *Store) reserveStreamTraffic(route string, quota, ingress, egress int64)
 	return date, nil
 }
 func (s *Store) consumeStreamTraffic(route, date string, sent int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
 	key := date + "/" + route
 	s.pendingTraffic[key] -= sent
 	if s.pendingTraffic[key] == 0 {
@@ -409,6 +412,8 @@ func (s *Store) refundStreamTraffic(route, date string, unused int64) error {
 	if err := s.chargeAtLocked(route, 0, 0, -unused, date); err != nil {
 		return err
 	}
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
 	key := date + "/" + route
 	s.pendingTraffic[key] -= unused
 	if s.pendingTraffic[key] == 0 {
@@ -430,10 +435,17 @@ func (s *Store) Traffic() ([]Traffic, error) {
 		if e = rows.Scan(&x.Date, &x.RouteID, &x.Ingress, &x.Egress); e != nil {
 			return nil, e
 		}
-		x.Egress = max(int64(0), x.Egress-s.pendingTraffic[x.Date+"/"+x.RouteID])
 		out = append(out, x)
 	}
-	return out, rows.Err()
+	if e = rows.Err(); e != nil {
+		return nil, e
+	}
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	for i := range out {
+		out[i].Egress = max(int64(0), out[i].Egress-s.pendingTraffic[out[i].Date+"/"+out[i].RouteID])
+	}
+	return out, nil
 }
 func (s *Store) Setting(key string) string {
 	var v string

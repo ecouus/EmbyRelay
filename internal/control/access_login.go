@@ -25,6 +25,7 @@ func (a *App) accessLogin(ctx context.Context, c AccessAccount, in AccessCommand
 	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(in.Password)) != nil || !strings.EqualFold(in.Username, c.Username) {
 		a.limiter.fail("subscription", in.ClientIP, in.Username)
+		a.limiter.waitFailure(ctx, "subscription", in.Username)
 		a.Store.Audit("anonymous", "subscription_login_failed", loginAuditTarget(in.Username, in.ClientIP))
 		return denied("用户名或密码错误")
 	}

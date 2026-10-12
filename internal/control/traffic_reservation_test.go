@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -102,5 +103,77 @@ func TestActualHeartbeatReconcilesLegacyCountersOnlyOnce(t *testing.T) {
 	actual.Traffic[0].Ingress = 99
 	if err := a.report(node, actual); err == nil {
 		t.Fatal("ingress rollback accepted")
+	}
+}
+
+func TestStreamConsumptionDoesNotWaitForDatabaseLock(t *testing.T) {
+	s := &Store{pendingTraffic: map[string]int64{"day/route": 10 << 20}}
+	s.mu.Lock() // Simulate another stream blocked inside a billing transaction.
+	defer s.mu.Unlock()
+	done := make(chan struct{})
+	go func() { s.consumeStreamTraffic("route", "day", 256<<10); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("stream consumption blocked on database lock")
+	}
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	if s.pendingTraffic["day/route"] != (10<<20)-(256<<10) {
+		t.Fatal("incorrect pending credit")
+	}
+}
+
+func TestConcurrentStreamAccountingWithTrafficReads(t *testing.T) {
+	s, err := testStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var group sync.WaitGroup
+	failures := make(chan error, 4)
+	for i := 0; i < 4; i++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for j := 0; j < 20; j++ {
+				date, err := s.reserveStreamTraffic("route", 0, 0, 1<<20)
+				if err != nil {
+					failures <- err
+					return
+				}
+				s.consumeStreamTraffic("route", date, 256<<10)
+				if err = s.refundStreamTraffic("route", date, 768<<10); err != nil {
+					failures <- err
+					return
+				}
+			}
+		}()
+	}
+	done := make(chan struct{})
+	go func() { group.Wait(); close(done) }()
+	for {
+		traffic, err := s.Traffic()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range traffic {
+			if row.Egress < 0 || row.Egress > 20<<20 {
+				t.Fatalf("inconsistent export: %+v", row)
+			}
+		}
+		select {
+		case <-done:
+			close(failures)
+			for err := range failures {
+				t.Fatal(err)
+			}
+			traffic, err = s.Traffic()
+			if err != nil || len(traffic) != 1 || traffic[0].Egress != 20<<20 {
+				t.Fatalf("final traffic: %+v %v", traffic, err)
+			}
+			return
+		default:
+		}
 	}
 }

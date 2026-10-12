@@ -280,7 +280,7 @@ func (a *App) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		user, e := a.current(r)
 		if e != nil {
-			apiError(w, 401, "authentication required")
+			authExpired(w, "authentication required")
 			return
 		}
 		if r.Method != "GET" && r.Method != "HEAD" && r.Header.Get("X-Requested-With") != "EmbyRelay" {

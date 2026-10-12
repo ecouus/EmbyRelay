@@ -29,17 +29,17 @@ func (a *App) portal(w http.ResponseWriter, r *http.Request) {
 	}
 	cookie, e := r.Cookie("relay_portal")
 	if e != nil {
-		apiError(w, 401, "请登录用户中心")
+		authExpired(w, "请登录用户中心")
 		return
 	}
 	var id string
 	if e = a.Store.DB.QueryRow("SELECT account_id FROM portal_sessions WHERE hash=? AND expires_at>?", Hash(cookie.Value), time.Now().Unix()).Scan(&id); e != nil {
-		apiError(w, 401, "请重新登录")
+		authExpired(w, "请重新登录")
 		return
 	}
 	c, e := get[AccessAccount](a.Store, "access_account", id)
 	if e != nil || !c.Enabled {
-		apiError(w, 401, "账号不可用")
+		authExpired(w, "账号不可用")
 		return
 	}
 	if p == "logout" && r.Method == "POST" {
@@ -288,6 +288,7 @@ func (a *App) portalLogin(w http.ResponseWriter, r *http.Request, username, pass
 	}
 	if !verifyPassword(hash, password) || count != 1 || err != nil || !c.Enabled {
 		a.limiter.fail("portal", ip, username)
+		a.limiter.waitFailure(r.Context(), "portal", username)
 		apiError(w, 401, "用户名或密码错误，或账号已停用")
 		return
 	}
