@@ -131,6 +131,11 @@ func (a *App) play(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q.Body = &deadlineBody{ReadCloser: http.MaxBytesReader(w, r.Body, 32*1024*1024), controller: http.NewResponseController(w)}
+	if d, ok := r.Context().Value(detailKey{}).(*diagnosticDetail); ok {
+		d.Route = rr.route.Alias
+		d.UpstreamID = rr.route.UpstreamID
+		d.UpstreamPath = diagnosticPath(q)
+	}
 	gateway := rr.gateway
 	if accessKey.AccountID != "" {
 		var done func()

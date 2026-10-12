@@ -78,8 +78,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(reason, "回源") {
 			source = "upstream"
 		}
-		a.Store.DB.Exec("INSERT INTO request_diagnostics(id,status,reason,created_at,method,path,source,details) VALUES(?,?,?,?,?,?,?,?)", id, dw.status, reason, time.Now().Unix(), r.Method, diagnosticPath(r), source, string(encoded))
-		a.Store.DB.Exec("DELETE FROM request_diagnostics WHERE id NOT IN (SELECT id FROM request_diagnostics ORDER BY created_at DESC, rowid DESC LIMIT 1000)")
+		a.Store.RecordDiagnostic(Diagnostic{ID: id, Status: dw.status, Reason: reason, CreatedAt: time.Now().Unix(), Method: r.Method, Path: diagnosticPath(r), Source: source, Details: string(encoded)})
 	}()
 	a.serveHTTP(dw, r.WithContext(context.WithValue(context.WithValue(r.Context(), diagnosticKey{}, &reason), detailKey{}, detail)))
 }

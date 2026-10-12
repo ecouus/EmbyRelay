@@ -24,6 +24,7 @@ func TestDatabaseCopyRoundTripAndResume(t *testing.T) {
 		`INSERT INTO objects VALUES('route','r','{"alias":"route","upstream_id":"up"}',1)`,
 		"INSERT INTO audit_logs VALUES(400,'u','test','r',4294967296)",
 		"INSERT INTO traffic_daily VALUES('2026-10-12','r',1099511627776,2199023255552)",
+		"INSERT INTO request_diagnostics(id,status,reason,created_at,method,path,source,details,node_id,node_name,uploaded) VALUES('node:diag',401,'missing token',4294967296,'POST','/r/route/***/Users/AuthenticateByName','local','{}','node','Relay B',1)",
 		"INSERT INTO access_usage VALUES('a','cycle',4398046511104)",
 		"INSERT INTO access_rate VALUES('a',9000000000000000000)",
 		"INSERT INTO stream_sessions(id,route_id,started_at,bytes_sent,status) VALUES('s','r',4294967296,1099511627776,'completed')",
@@ -64,6 +65,11 @@ func TestDatabaseCopyRoundTripAndResume(t *testing.T) {
 	defer restored.Close()
 	if _, err = database.Copy(context.Background(), target.DB, restored.DB, ""); err != nil {
 		t.Fatal("reverse copy", err)
+	}
+	var diagnosticNode, diagnosticName string
+	var uploaded int
+	if err = restored.DB.QueryRow("SELECT node_id,node_name,uploaded FROM request_diagnostics WHERE id='node:diag'").Scan(&diagnosticNode, &diagnosticName, &uploaded); err != nil || diagnosticNode != "node" || diagnosticName != "Relay B" || uploaded != 1 {
+		t.Fatal("diagnostic provenance lost", err)
 	}
 	var used, rate, ended int64
 	if err = restored.DB.QueryRow("SELECT bytes FROM access_usage").Scan(&used); err != nil || used != 4398046511104 {

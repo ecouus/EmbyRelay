@@ -113,7 +113,7 @@ POST /api/v1/upstreams/{id}/credentials：仅管理员，要求登录和 X-Reque
 | 字段权限 | 不接收 owner / quota / relay_id / allowed_cidrs 等管理字段 |
 | 到期账号 | 可读取个人信息 |
 | 停用、改密、撤销 | 同时撤销用户中心会话 |
-| 数据库迁移 | 当前版本 9 |
+| 数据库迁移 | 当前版本 10 |
 
 订阅额度使用双向折算：charge.bytes 仍传实际输出块大小，由控制端统一按 2 倍扣减 access_usage；限速按原始 bytes 计算。旧用量不追溯翻倍，普通路由上下行统计不变。该规则为成本折算，不等于厂商网卡账单。
 
@@ -182,3 +182,10 @@ GET 策略返回 `policy`、`default_policy` 和 `scope`（source/account/inheri
 | 保留字段 | PlaySessionId / DeviceProfile |
 | 第三方媒体域 | 清除身份头 |
 | 旧 Agent | access RPC 返回升级错误，不下发访问账号密钥 |
+
+
+## 中转请求诊断汇总
+
+- `POST /api/v1/agent/diagnostics`：沿用节点签名认证，提交 `records`，每批最多 100 条。控制端返回确认的 `ids`；记录按签名节点归属并去重，不允许请求体指定来源节点。该接口独立于心跳。
+- `GET /api/v1/diagnostics?node_id=节点ID`：按节点读取；`node_id=local` 为控制端，不传为全部节点。需要管理端登录。返回节点 ID/名称和脱敏诊断详情，每节点保留 1000 条。
+- Agent 本地队列仅在收到确认后标记上传，重启后继续补传。超过本地 1000 条保留上限的历史记录会淘汰。

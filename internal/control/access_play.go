@@ -97,7 +97,7 @@ func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeR
 		command.UserAgent = safeUA(q)
 		out, e := a.accessCall(q.Context(), command)
 		if e != nil {
-			diagnosticReason(q, "订阅登录被拒绝")
+			diagnosticReason(q, subscriptionLoginDiagnostic(e))
 			apiError(w, 401, e.Error())
 		} else {
 			w.Header().Set("Content-Type", "application/json")
@@ -297,5 +297,15 @@ func (w *meterWriter) closeConnection() {
 	w.mu.Unlock()
 	if c != nil {
 		c.Close()
+	}
+}
+
+// Persist only known messages; raw transport/database errors can contain secrets.
+func subscriptionLoginDiagnostic(err error) string {
+	switch err.Error() {
+	case "用户名或密码错误", "登录尝试过多，请稍后重试", "访问账号不存在", "访问账号已停用", "订阅已到期", "访问地址已失效", "访问地址不可用", "路由不可用", "源站不可用", "源站账号未配置", "源站登录连接失败", "源站拒绝登录，请管理员检查源站账号", "源站登录响应无效", "源站登录响应缺少 Token 或用户", "不能绑定源站管理员账号，请使用普通 Emby 账号", "本周期流量已用尽", "节点尚未支持订阅授权", "中转节点需要同步升级设备身份支持", "订阅服务不可用", "登录会话保存失败", "设备身份配置不可用":
+		return "订阅登录被拒绝：" + err.Error()
+	default:
+		return "订阅登录被拒绝"
 	}
 }

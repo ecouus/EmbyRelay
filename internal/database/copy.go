@@ -37,8 +37,8 @@ func Copy(ctx context.Context, source, target *DB, migrationID string) (map[stri
 		}
 	}
 	var version int
-	if err = from.QueryRow("SELECT COALESCE(MAX(version),0) FROM schema_migrations").Scan(&version); err != nil || version != 9 {
-		return nil, fmt.Errorf("source must be upgraded to schema version 9 before copying")
+	if err = from.QueryRow("SELECT COALESCE(MAX(version),0) FROM schema_migrations").Scan(&version); err != nil || version != 10 {
+		return nil, fmt.Errorf("source must be upgraded to schema version 10 before copying")
 	}
 	for _, table := range tables {
 		var count int64

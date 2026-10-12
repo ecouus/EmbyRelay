@@ -20,6 +20,22 @@ import (
 	"time"
 )
 
+type ControlRequestError struct {
+	Path   string
+	Reason string
+}
+
+func (e *ControlRequestError) Error() string { return e.Reason }
+
+type ControlHTTPError struct {
+	Path   string
+	Status int
+}
+
+func (e *ControlHTTPError) Error() string {
+	return fmt.Sprintf("control plane %s returned %d", e.Path, e.Status)
+}
+
 type Identity struct {
 	ID         string `json:"id"`
 	PrivateKey string `json:"private_key"`
@@ -153,16 +169,19 @@ func (a *Agent) request(ctx context.Context, method, path string, input, output 
 	control.SignRequest(r, body, a.Identity.ID, a.key)
 	resp, e := a.Client.Do(r)
 	if e != nil {
-		return fmt.Errorf("control plane unreachable")
+		return &ControlRequestError{Path: path, Reason: "control plane unreachable"}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("control plane returned %d", resp.StatusCode)
+		return &ControlHTTPError{Path: path, Status: resp.StatusCode}
 	}
 	if output == nil {
 		return nil
 	}
-	return json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(output)
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(output); err != nil {
+		return &ControlRequestError{Path: path, Reason: "invalid control plane response"}
+	}
+	return nil
 }
 func (a *Agent) Sync(ctx context.Context) error {
 	var signed control.SignedSnapshot
@@ -194,15 +213,74 @@ func (a *Agent) Sync(ctx context.Context) error {
 	}
 	return a.request(ctx, "POST", "/api/v1/agent/heartbeat", control.Heartbeat{DeviceIdentitySupport: true, SubscriptionSupport: true, Sessions: sessions, Traffic: traffic, Active: a.App.Active(), Version: a.version}, nil)
 }
+
+// Upload independently of configuration and heartbeat reports so their failures
+// can still be diagnosed from the control UI. Only acknowledged IDs are marked.
+func (a *Agent) UploadDiagnostics(ctx context.Context) error {
+	records, err := a.Store.PendingDiagnostics()
+	if err != nil {
+		return err
+	}
+	if len(records) == 0 {
+		return nil
+	}
+	// Leave room for JSON escaping and the signed API's request size limit.
+	for len(records) > 1 && len(control.Encode(control.DiagnosticBatch{Records: records})) > 1<<20 {
+		records = records[:len(records)-1]
+	}
+	var ack control.DiagnosticAck
+	if err = a.request(ctx, "POST", "/api/v1/agent/diagnostics", control.DiagnosticBatch{Records: records}, &ack); err != nil {
+		return err
+	}
+	sent := map[string]bool{}
+	for _, d := range records {
+		sent[d.ID] = true
+	}
+	for _, id := range ack.IDs {
+		if !sent[id] {
+			return fmt.Errorf("invalid diagnostic acknowledgement")
+		}
+	}
+	return a.Store.AcknowledgeDiagnostics(ack.IDs)
+}
 func (a *Agent) Run(ctx context.Context) {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
+	lastError := ""
 	for {
+		if err := a.UploadDiagnostics(ctx); err != nil {
+			slog.Warn("agent diagnostic upload failed", "reason", err.Error())
+		}
 		if e := a.Sync(ctx); e != nil {
+			if e.Error() != lastError {
+				status := 503
+				path := "/api/v1/agent/config"
+				reason := "Agent 配置或心跳同步失败"
+				code := "agent_sync_failed"
+				if failure, ok := e.(*ControlHTTPError); ok {
+					status = failure.Status
+					if status < 400 || status > 599 {
+						status = 502
+					}
+					path = failure.Path
+					reason = fmt.Sprintf("Agent 同步：控制端 %s 返回 HTTP %d", path, failure.Status)
+					code = "agent_control_http_error"
+				} else if failure, ok := e.(*ControlRequestError); ok {
+					path = failure.Path
+					reason = "Agent 同步：控制端连接或响应失败"
+				}
+				recordErr := a.Store.RecordDiagnostic(control.Diagnostic{ID: control.ID(), Status: status, Reason: reason, CreatedAt: time.Now().Unix(), Method: map[bool]string{true: "POST", false: "GET"}[path == "/api/v1/agent/heartbeat"], Path: path, Source: "agent", Details: string(control.Encode(map[string]any{"code": code, "advice": "检查控制端对应接口的请求诊断、节点状态和配置版本"}))})
+				if recordErr != nil {
+					slog.Warn("agent synchronization diagnostic could not be saved")
+				}
+				lastError = e.Error()
+			}
 			slog.Warn("agent synchronization failed", "reason", e.Error())
 			if time.Now().After(a.validUntil) {
 				a.App.Apply(control.Snapshot{Version: a.version})
 			}
+		} else {
+			lastError = ""
 		}
 		select {
 		case <-ctx.Done():

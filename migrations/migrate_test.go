@@ -31,6 +31,9 @@ func TestDeviceIdentityUpgradePreservesOldTokens(t *testing.T) {
 	if _, err = db.Exec(`INSERT INTO access_tokens(hash,account_id,source_token,user_id,created_at,expires_at,device,client_ip,user_agent,key_id) VALUES('old-token','account','encrypted-source','user',1,9999999999,'device','127.0.0.1','old-player','key')`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = db.Exec("INSERT INTO request_diagnostics(id,status,reason,created_at,method,path,source,details) VALUES('old-diagnostic',401,'missing token',1,'GET','/r/test/***/Items','local','{}')"); err != nil {
+		t.Fatal(err)
+	}
 	if err = Apply(db); err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +49,12 @@ func TestDeviceIdentityUpgradePreservesOldTokens(t *testing.T) {
 	}
 	var version int
 	db.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version)
-	if version != 9 {
+	var nodeID, nodeName string
+	var uploaded int
+	if err = db.QueryRow("SELECT node_id,node_name,uploaded FROM request_diagnostics WHERE id='old-diagnostic'").Scan(&nodeID, &nodeName, &uploaded); err != nil || nodeID != "" || nodeName != "" || uploaded != 0 {
+		t.Fatal("legacy diagnostic migration", err)
+	}
+	if version != 10 {
 		t.Fatal(version)
 	}
 }

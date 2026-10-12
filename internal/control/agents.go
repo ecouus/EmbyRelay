@@ -201,6 +201,18 @@ func (a *App) agentAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case r.URL.Path == "/api/v1/agent/diagnostics" && r.Method == "POST":
+		var batch DiagnosticBatch
+		if json.Unmarshal(body, &batch) != nil {
+			apiError(w, 400, "invalid diagnostic batch")
+			return
+		}
+		ack, err := a.receiveDiagnostics(node, batch)
+		if err != nil {
+			apiError(w, 400, err.Error())
+			return
+		}
+		writeJSON(w, 200, ack)
 	case r.URL.Path == "/api/v1/agent/access" && r.Method == "POST":
 		if !node.SubscriptionSupport || !node.DeviceIdentitySupport {
 			writeJSON(w, 200, AccessResult{Error: "中转节点需要同步升级设备身份支持", Code: 403})

@@ -313,7 +313,15 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, user User) {
 	case resource == "redirect-requests":
 		apiError(w, 410, "跳转审批已移除，媒体自动中转")
 	case p == "diagnostics" && r.Method == "GET":
-		a.queryRows(w, "SELECT id,status,reason,created_at,method,path,source,details FROM request_diagnostics ORDER BY created_at DESC LIMIT ?", intParam(r, "limit", 100))
+		node := r.URL.Query().Get("node_id")
+		query := "SELECT id,status,reason,created_at,method,path,source,details,node_id,node_name FROM request_diagnostics"
+		if node == "local" {
+			a.queryRows(w, query+" WHERE node_id='' ORDER BY created_at DESC,id DESC LIMIT ?", intParam(r, "limit", 100))
+		} else if node != "" {
+			a.queryRows(w, query+" WHERE node_id=? ORDER BY created_at DESC,id DESC LIMIT ?", node, intParam(r, "limit", 100))
+		} else {
+			a.queryRows(w, query+" ORDER BY created_at DESC,id DESC LIMIT ?", intParam(r, "limit", 100))
+		}
 	case p == "audit" && r.Method == "GET":
 		a.queryRows(w, "SELECT id,actor_id,action,target,created_at FROM audit_logs ORDER BY id DESC LIMIT ?", intParam(r, "limit", 100))
 	case p == "overview" && r.Method == "GET":
