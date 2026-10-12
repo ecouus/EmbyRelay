@@ -30,6 +30,7 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm --prefix web ci
+      - run: npm --prefix web test
       - run: npm --prefix web run build
       - uses: actions/setup-go@v5
         with:

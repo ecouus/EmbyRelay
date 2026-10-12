@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"strings"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -37,10 +38,25 @@ func Open(driver, source string) (*DB, error) {
 	if name == "postgres" {
 		name = "pgx"
 	} else {
-		query := url.Values{}
+		var uri *url.URL
+		var err error
+		if source == ":memory:" {
+			uri = &url.URL{Scheme: "file", Opaque: ":memory:"}
+		} else if strings.HasPrefix(source, "file:") {
+			uri, err = url.Parse(source)
+		} else {
+			var absolute string
+			absolute, err = filepath.Abs(source)
+			uri = &url.URL{Scheme: "file", Path: filepath.ToSlash(absolute)}
+		}
+		if err != nil {
+			return nil, fmt.Errorf("invalid SQLite source: %w", err)
+		}
+		query := uri.Query()
 		query.Add("_pragma", "busy_timeout(5000)")
 		query.Add("_pragma", "foreign_keys(ON)")
-		source += "?" + query.Encode()
+		uri.RawQuery = query.Encode()
+		source = uri.String()
 	}
 	raw, err := sql.Open(name, source)
 	if err != nil {
@@ -54,6 +70,35 @@ func Open(driver, source string) (*DB, error) {
 		raw.SetMaxIdleConns(4)
 	}
 	return db, nil
+}
+
+// SQLiteFilePath resolves a file URI for filesystem checks without discarding
+// connection options from the source subsequently passed to Open.
+func SQLiteFilePath(source string) (string, error) {
+	if source == "" || source == ":memory:" {
+		return "", fmt.Errorf("SQLite requires a file path")
+	}
+	if !strings.HasPrefix(source, "file:") {
+		return source, nil
+	}
+	uri, err := url.Parse(source)
+	if err != nil {
+		return "", err
+	}
+	if uri.Host != "" && uri.Host != "localhost" {
+		return "", fmt.Errorf("SQLite requires a local file")
+	}
+	path := uri.Path
+	if uri.Opaque != "" {
+		path, err = url.PathUnescape(uri.Opaque)
+		if err != nil {
+			return "", err
+		}
+	}
+	if path == "" || path == ":memory:" || uri.Query().Get("mode") == "memory" {
+		return "", fmt.Errorf("SQLite requires a file path")
+	}
+	return filepath.FromSlash(path), nil
 }
 
 // SQL adapts only the scalar MAX expressions used by this application and

@@ -155,6 +155,24 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 			return denied("登录已失效，请重新登录")
 		}
 	}
+	// Settle the previous short write in the same transaction before allocating
+	// another chunk, preserving its original billing cycle and refund bound.
+	if in.Action == "charge" {
+		if in.RefundBytes < 0 || in.RefundBytes > streamAccessChunk {
+			return denied("invalid refund")
+		}
+		if in.RefundBytes > 0 {
+			var chargedCycle string
+			var chargedBytes, expires int64
+			err = tx.QueryRow("SELECT charged_cycle,charged_bytes,expires_at FROM access_leases WHERE id=? AND account_id=? AND node_id=? AND token_hash=?", in.Lease, c.ID, node, leaseHash).Scan(&chargedCycle, &chargedBytes, &expires)
+			if err != nil || chargedCycle == "" || in.RefundBytes > chargedBytes || expires <= now.Unix() {
+				return denied("invalid refund")
+			}
+			if _, err = tx.Exec("UPDATE access_usage SET bytes=CASE WHEN bytes>=? THEN bytes-? ELSE 0 END,retired_at=0 WHERE account_id=? AND cycle=?", in.RefundBytes*2, in.RefundBytes*2, c.ID, chargedCycle); err != nil {
+				return denied("订阅服务不可用")
+			}
+		}
+	}
 	cycle, _ := accountCycle(c, now)
 	var used int64
 	if e := tx.QueryRow("SELECT bytes FROM access_usage WHERE account_id=? AND cycle=?", c.ID, cycle).Scan(&used); e != nil && e != sql.ErrNoRows {

@@ -230,7 +230,15 @@ func (w *meterWriter) reserve(n int) error {
 			return err
 		}
 	}
-	return w.reserveRoute(n)
+	if err := w.reserveRoute(n); err != nil {
+		if w.accessCharge != nil {
+			w.mu.Lock()
+			w.accessRefund += int64(n)
+			w.mu.Unlock()
+		}
+		return err
+	}
+	return nil
 }
 func (w *meterWriter) reserveRoute(n int) error {
 	if e := w.wait(n); e != nil {

@@ -78,7 +78,7 @@ func (l *loginLimiter) fail(scope, ip, username string) {
 func limiterKeys(scope, ip, username string) []string {
 	keys := []string{scope + ":ip:" + ip}
 	if username != "" {
-		keys = append(keys, scope+":user:"+strings.ToLower(username))
+		keys = append(keys, scope+":user-ip:"+strings.ToLower(username)+"@"+ip)
 	}
 	return keys
 }

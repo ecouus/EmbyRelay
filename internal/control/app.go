@@ -287,7 +287,7 @@ func (a *App) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			apiError(w, 403, "CSRF header required")
 			return
 		}
-		if user.Role != "admin" && r.Method != "GET" && r.URL.Path != "/api/v1/auth/logout" && !(r.Method == "POST" && r.URL.Path == "/api/v1/redirect-requests") {
+		if user.Role != "admin" && r.Method != "GET" && r.URL.Path != "/api/v1/auth/logout" && !(r.Method == "POST" && (r.URL.Path == "/api/v1/redirect-requests" || r.URL.Path == "/api/v1/auth/totp" || r.URL.Path == "/api/v1/auth/password")) {
 			apiError(w, 403, "administrator role required")
 			return
 		}

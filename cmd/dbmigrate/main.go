@@ -36,7 +36,7 @@ func run() error {
 	}
 	read := func(driver, path, secret string) (string, error) {
 		if driver == "sqlite" {
-			if path == "" || path == ":memory:" {
+			if _, err := database.SQLiteFilePath(path); err != nil {
 				return "", fmt.Errorf("SQLite requires a file path")
 			}
 			return path, nil
@@ -56,12 +56,20 @@ func run() error {
 		return err
 	}
 	if *sourceDriver == "sqlite" {
-		if _, err = os.Stat(fromSource); err != nil {
+		sourcePath, pathErr := database.SQLiteFilePath(fromSource)
+		if pathErr != nil {
+			return pathErr
+		}
+		if _, err = os.Stat(sourcePath); err != nil {
 			return err
 		}
 	}
 	if *targetDriver == "sqlite" {
-		file, e := os.OpenFile(toSource, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+		targetPath, pathErr := database.SQLiteFilePath(toSource)
+		if pathErr != nil {
+			return pathErr
+		}
+		file, e := os.OpenFile(targetPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 		if e != nil {
 			return fmt.Errorf("SQLite target must be a new file: %w", e)
 		}

@@ -247,20 +247,32 @@ func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeR
 		charge := command
 		charge.Action = "charge"
 		charge.Bytes = int64(n)
+		mw.mu.Lock()
+		charge.RefundBytes = mw.accessRefund
+		mw.mu.Unlock()
 		result, e := a.accessCall(requestContext, charge)
 		if e != nil {
 			return e
 		}
+		mw.mu.Lock()
+		mw.accessRefund -= charge.RefundBytes
+		mw.mu.Unlock()
 		if result.WaitNS > 0 {
 			timer := time.NewTimer(time.Duration(result.WaitNS))
 			defer timer.Stop()
 			select {
 			case <-requestContext.Done():
+				mw.mu.Lock()
+				mw.accessRefund += int64(n)
+				mw.mu.Unlock()
 				return requestContext.Err()
 			case <-timer.C:
 			}
 			charge.Action = "check"
 			if _, e = a.accessCall(requestContext, charge); e != nil {
+				mw.mu.Lock()
+				mw.accessRefund += int64(n)
+				mw.mu.Unlock()
 				return e
 			}
 		}

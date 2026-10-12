@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import {requestAPI} from './api'
 import {computed,onMounted,onUnmounted,ref,watch} from 'vue'
 import {NAlert,NButton,NInput,NTag} from 'naive-ui'
 interface Address {route_id:string;route_alias:string;path:string;origin:string;node_id:string;entry_label:string;available:boolean;unavailable_reason?:string}
@@ -12,8 +13,7 @@ const addressURL=(a:Address)=>a.path?(a.origin||window.location.origin).replace(
 async function refresh(){
  const request=++sequence;busy.value=true;error.value=''
  try{
-  const response=await fetch('/api/v1/user-sources'+(props.accountId?'?account_id='+encodeURIComponent(props.accountId):''),{credentials:'same-origin',headers:{'X-Requested-With':'EmbyRelay'}})
-  const data=await response.json()
+  const {response,data}=await requestAPI('/api/v1/user-sources'+(props.accountId?'?account_id='+encodeURIComponent(props.accountId):''))
   if(!response.ok)throw Error(data.error||'源站读取失败')
   if(request===sequence)sources.value=data
  }catch(e){if(request===sequence)error.value=e instanceof Error?e.message:'源站读取失败'}finally{if(request===sequence)busy.value=false}
