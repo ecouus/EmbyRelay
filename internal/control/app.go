@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -23,25 +24,59 @@ import (
 )
 
 type App struct {
-	AccessRPC     func(context.Context, AccessCommand) (AccessResult, error)
-	accessMu      sync.Mutex
-	AcquireQuota  func(context.Context, Route, int64) error
-	Store         *Store
-	SecureCookies bool
-	AgentMode     bool
-	master        []byte
-	signing       ed25519.PrivateKey
-	dummyHash     string
-	limiter       loginLimiter
-	configMu      sync.Mutex
-	state         atomic.Pointer[runtimeState]
-	nodes         atomic.Pointer[[]Node]
-	active        atomic.Int64
-	requests      atomic.Int64
-	ui            http.Handler
-	runtimeMu     sync.Mutex
-	usage         map[string]*routeRuntime
+	AccessRPC        func(context.Context, AccessCommand) (AccessResult, error)
+	accessMu         sync.Mutex
+	AcquireQuota     func(context.Context, Route, int64) error
+	Store            *Store
+	SecureCookies    bool
+	AgentMode        bool
+	master           []byte
+	signing          ed25519.PrivateKey
+	dummyHash        string
+	limiter          loginLimiter
+	configMu         sync.Mutex
+	state            atomic.Pointer[runtimeState]
+	nodes            atomic.Pointer[[]Node]
+	active           atomic.Int64
+	requests         atomic.Int64
+	ui               http.Handler
+	runtimeMu        sync.Mutex
+	usage            map[string]*routeRuntime
+	diagnosticMu     sync.Mutex
+	diagnosticQueue  chan Diagnostic
+	diagnosticDone   chan struct{}
+	diagnosticSample atomic.Uint64
+	hijackedMu       sync.Mutex
+	hijacked         map[net.Conn]struct{}
+	mediaMu          sync.Mutex
+	mediaGateways    map[string]*cachedMediaGateway
 }
+
+func (a *App) trackHijacked(c net.Conn) {
+	a.hijackedMu.Lock()
+	if a.hijacked == nil {
+		a.hijacked = map[net.Conn]struct{}{}
+	}
+	a.hijacked[c] = struct{}{}
+	a.hijackedMu.Unlock()
+}
+func (a *App) untrackHijacked(c net.Conn) {
+	a.hijackedMu.Lock()
+	delete(a.hijacked, c)
+	a.hijackedMu.Unlock()
+}
+func (a *App) CloseHijacked() {
+	a.hijackedMu.Lock()
+	conns := make([]net.Conn, 0, len(a.hijacked))
+	for c := range a.hijacked {
+		conns = append(conns, c)
+	}
+	a.hijackedMu.Unlock()
+	for _, c := range conns {
+		c.Close()
+	}
+}
+
 type routeRuntime struct {
 	active atomic.Int64
 	rateMu sync.Mutex
@@ -53,6 +88,46 @@ type runtimeRoute struct {
 	keys    []Key
 	usage   *routeRuntime
 }
+type cachedMediaGateway struct {
+	gateway *proxy.Gateway
+	used    time.Time
+}
+
+func (a *App) mediaGateway(key string, cfg proxy.Config) *proxy.Gateway {
+	a.mediaMu.Lock()
+	defer a.mediaMu.Unlock()
+	if a.mediaGateways == nil {
+		a.mediaGateways = map[string]*cachedMediaGateway{}
+	}
+	if cached := a.mediaGateways[key]; cached != nil {
+		cached.used = time.Now()
+		return cached.gateway
+	}
+	if len(a.mediaGateways) >= 128 {
+		oldest := ""
+		for id, cached := range a.mediaGateways {
+			if oldest == "" || cached.used.Before(a.mediaGateways[oldest].used) {
+				oldest = id
+			}
+		}
+		a.mediaGateways[oldest].gateway.CloseIdleConnections()
+		delete(a.mediaGateways, oldest)
+	}
+	gateway := proxy.New(cfg)
+	a.mediaGateways[key] = &cachedMediaGateway{gateway: gateway, used: time.Now()}
+	return gateway
+}
+func (a *App) trimMediaGateways() {
+	a.mediaMu.Lock()
+	defer a.mediaMu.Unlock()
+	for key, cached := range a.mediaGateways {
+		if time.Since(cached.used) > 5*time.Minute {
+			cached.gateway.CloseIdleConnections()
+			delete(a.mediaGateways, key)
+		}
+	}
+}
+
 type runtimeState struct {
 	snapshot Snapshot
 	routes   map[string]*runtimeRoute
@@ -154,6 +229,12 @@ func (a *App) Apply(s Snapshot) error {
 		next.routes[r.Alias] = rr
 	}
 	old := a.state.Swap(next)
+	a.mediaMu.Lock()
+	for key, cached := range a.mediaGateways {
+		cached.gateway.CloseIdleConnections()
+		delete(a.mediaGateways, key)
+	}
+	a.mediaMu.Unlock()
 	if old != nil {
 		for _, r := range old.routes {
 			r.gateway.CloseIdleConnections()
@@ -270,6 +351,8 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, user User) {
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	case p == "auth/totp" && r.Method == "POST":
 		a.totpAPI(w, r, user)
+	case p == "auth/password" && r.Method == "POST":
+		a.changeOwnPassword(w, r, user)
 	case resource == "upstreams" && len(parts) == 3 && parts[2] == "credentials":
 		a.revealCredentials(w, r, user, id)
 	case resource == "upstreams" && len(parts) == 3 && parts[2] == "health" && r.Method == "GET":
@@ -579,7 +662,7 @@ func (a *App) users(w http.ResponseWriter, r *http.Request, u User, id string) {
 		return
 	}
 	if r.Method == "GET" {
-		a.queryRows(w, "SELECT id,username,role,(totp!='') AS totp_enabled FROM users ORDER BY username")
+		a.queryRows(w, "SELECT id,username,role,CASE WHEN totp!='' THEN 1 ELSE 0 END AS totp_enabled FROM users ORDER BY username")
 		return
 	}
 	a.configMu.Lock()
@@ -681,7 +764,10 @@ func (a *App) totpAPI(w http.ResponseWriter, r *http.Request, u User) {
 			return
 		}
 		b := make([]byte, 20)
-		rand.Read(b)
+		if _, err := rand.Read(b); err != nil {
+			apiError(w, 500, "secret generation failed")
+			return
+		}
 		secret := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b)
 		writeJSON(w, 200, map[string]string{"secret": secret, "uri": "otpauth://totp/EmbyRelay:" + url.PathEscape(u.Username) + "?secret=" + secret + "&issuer=EmbyRelay&algorithm=SHA1&digits=6&period=30"})
 		return
@@ -692,7 +778,12 @@ func (a *App) totpAPI(w http.ResponseWriter, r *http.Request, u User) {
 			apiError(w, 400, "invalid secret or code")
 			return
 		}
-		encrypted, _ = a.seal(in.Secret)
+		var err error
+		encrypted, err = a.seal(in.Secret)
+		if err != nil {
+			apiError(w, 500, "secret encryption failed")
+			return
+		}
 	} else if in.Action == "disable" {
 		if !a.checkTOTP(u.TOTP, in.Code) {
 			apiError(w, 400, "invalid code")
@@ -705,6 +796,9 @@ func (a *App) totpAPI(w http.ResponseWriter, r *http.Request, u User) {
 	if _, e := a.Store.DB.Exec("UPDATE users SET totp=? WHERE id=?", encrypted, u.ID); e != nil {
 		apiError(w, 500, "storage failed")
 		return
+	}
+	if in.Action == "disable" {
+		a.Store.DB.Exec("DELETE FROM totp_replay WHERE user_id=?", u.ID)
 	}
 	a.Store.DB.Exec("DELETE FROM login_sessions WHERE user_id=?", u.ID)
 	a.Store.Audit(u.ID, "totp_"+in.Action, u.ID)
@@ -746,6 +840,7 @@ func (a *App) Maintenance(ctx context.Context) {
 			return
 		case <-t.C:
 			a.Store.Cleanup()
+			a.trimMediaGateways()
 		}
 	}
 }

@@ -67,6 +67,22 @@ func TestStreamMeterUsesLargerSubscriptionCharges(t *testing.T) {
 	}
 }
 
+func TestOrdinaryStreamReservesAndRefundsRouteCredit(t *testing.T) {
+	a, admin := testApp(t)
+	route, _ := configured(t, a, admin, "http://127.0.0.1:8096")
+	w := &meterWriter{ResponseWriter: httptest.NewRecorder(), app: a, route: route, usage: &routeRuntime{}, ctx: context.Background(), stream: true}
+	for i := 0; i < 2; i++ {
+		if n, err := w.Write(bytes.Repeat([]byte("x"), 1<<20)); err != nil || n != 1<<20 {
+			t.Fatalf("write: %d %v", n, err)
+		}
+	}
+	w.finishRouteCredit()
+	traffic, err := a.Store.Traffic()
+	if err != nil || len(traffic) != 1 || traffic[0].Egress != 2<<20 {
+		t.Fatalf("refund: %+v %v", traffic, err)
+	}
+}
+
 func TestStreamMeterShrinksChargeNearQuota(t *testing.T) {
 	a, admin := testApp(t)
 	route, _ := configured(t, a, admin, "http://127.0.0.1:8096")
@@ -373,7 +389,10 @@ func TestSignedAgentReplayAndReport(t *testing.T) {
 func TestAgentTrafficReportAcceptsBoundedEgressCorrection(t *testing.T) {
 	a, admin := testApp(t)
 	route, _ := configured(t, a, admin, "http://127.0.0.1:8096")
-	node := Node{ID: "test-node"}
+	node := Node{ID: "test-node", Enabled: true}
+	if err := a.Store.put("node", node.ID, node, "test"); err != nil {
+		t.Fatal(err)
+	}
 	route.RelayID = node.ID
 	if err := a.Store.put("route", route.ID, route, "test"); err != nil {
 		t.Fatal(err)
@@ -431,7 +450,12 @@ func TestDistributedQuotaReservations(t *testing.T) {
 	}
 	a.Reload()
 	day := time.Now().UTC().Format("2006-01-02")
-	n1, n2 := Node{ID: "one"}, Node{ID: "two"}
+	n1, n2 := Node{ID: "one", Enabled: true}, Node{ID: "two", Enabled: true}
+	for _, node := range []Node{n1, n2} {
+		if err := a.Store.put("node", node.ID, node, "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	g, e := a.grantQuota(n1, QuotaRequest{RouteID: route.ID, Date: day, Target: 70})
 	if e != nil || g.Granted != 70 {
 		t.Fatal(g, e)
@@ -484,12 +508,16 @@ func TestStoreReopenAndRateLimit(t *testing.T) {
 	}
 	l := loginLimiter{}
 	for i := 0; i < 10; i++ {
-		if !l.allow("127.0.0.1:1") {
+		if !l.allow("admin", "127.0.0.1", "person") {
 			t.Fatal("early throttle")
 		}
+		l.fail("admin", "127.0.0.1", "person")
 	}
-	if l.allow("127.0.0.1:2") {
+	if l.allow("admin", "127.0.0.1", "person") {
 		t.Fatal("login limit bypassed")
+	}
+	if !l.allow("portal", "127.0.0.1", "person") || !l.allow("admin", "2001:db8::1", "another") {
+		t.Fatal("independent login scopes or addresses were blocked")
 	}
 }
 

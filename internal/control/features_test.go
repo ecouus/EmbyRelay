@@ -2,13 +2,17 @@ package control
 
 import (
 	"encoding/json"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
 func TestDiagnosticsRedaction(t *testing.T) {
 	a, c := testApp(t)
-	r := call(t, a, nil, "GET", "/r/missing/private-secret?api_key=private-token", nil)
+	var r *httptest.ResponseRecorder
+	for i := 0; i < 10; i++ {
+		r = call(t, a, nil, "GET", "/r/missing/private-secret?api_key=private-token", nil)
+	}
 	if r.Code != 404 {
 		t.Fatal(r.Code)
 	}

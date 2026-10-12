@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"golang.org/x/crypto/bcrypt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -33,29 +32,67 @@ type loginLimiter struct {
 	entries map[string]limiterEntry
 }
 
-func (l *loginLimiter) allow(addr string) bool {
+func (l *loginLimiter) allow(scope, ip, username string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.entries == nil {
 		l.entries = map[string]limiterEntry{}
 	}
-	host, _, _ := net.SplitHostPort(addr)
 	now := time.Now()
-	for k, e := range l.entries {
-		if now.Sub(e.Since) > 5*time.Minute {
-			delete(l.entries, k)
+	for _, key := range limiterKeys(scope, ip, username) {
+		entry := l.entries[key]
+		if now.Sub(entry.Since) <= 5*time.Minute && entry.Count >= 10 {
+			return false
 		}
 	}
-	e := l.entries[host]
-	if e.Since.IsZero() {
-		e.Since = now
+	return true
+}
+func (l *loginLimiter) fail(scope, ip, username string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.entries == nil {
+		l.entries = map[string]limiterEntry{}
 	}
-	e.Count++
-	if len(l.entries) > 10000 {
-		return false
+	now := time.Now()
+	for _, key := range limiterKeys(scope, ip, username) {
+		entry := l.entries[key]
+		if now.Sub(entry.Since) > 5*time.Minute {
+			entry = limiterEntry{Since: now}
+		}
+		if entry.Since.IsZero() {
+			entry.Since = now
+		}
+		entry.Count++
+		l.entries[key] = entry
 	}
-	l.entries[host] = e
-	return e.Count <= 10
+	for len(l.entries) > 10000 {
+		oldest := ""
+		for key, entry := range l.entries {
+			if oldest == "" || entry.Since.Before(l.entries[oldest].Since) {
+				oldest = key
+			}
+		}
+		delete(l.entries, oldest)
+	}
+}
+func limiterKeys(scope, ip, username string) []string {
+	keys := []string{scope + ":ip:" + ip}
+	if username != "" {
+		keys = append(keys, scope+":user:"+strings.ToLower(username))
+	}
+	return keys
+}
+func loginAuditTarget(username, ip string) string {
+	if len(username) > 80 {
+		username = username[:80]
+	}
+	username = strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 {
+			return -1
+		}
+		return r
+	}, username)
+	return username + " @ " + ip
 }
 func password(v string) (string, error) {
 	if len(v) < 8 || len(v) > 72 {
@@ -124,16 +161,17 @@ func (a *App) current(r *http.Request) (User, error) {
 	return u, e
 }
 func (a *App) login(w http.ResponseWriter, r *http.Request) {
-	if !a.limiter.allow(r.RemoteAddr) {
-		apiError(w, 429, "too many attempts; retry in five minutes")
-		return
-	}
 	var in struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 		Code     string `json:"code"`
 	}
 	if !decode(w, r, &in) {
+		return
+	}
+	ip := clientIP(r)
+	if !a.limiter.allow("admin", ip, in.Username) {
+		apiError(w, 429, "too many attempts; retry in five minutes")
 		return
 	}
 	var u User
@@ -148,7 +186,8 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	}
 	ok := bcrypt.CompareHashAndPassword([]byte(hash), []byte(in.Password)) == nil
 	if e != nil || !ok {
-		a.Store.Audit("anonymous", "login_failed", "")
+		a.limiter.fail("admin", ip, in.Username)
+		a.Store.Audit("anonymous", "login_failed", loginAuditTarget(in.Username, ip))
 		apiError(w, 401, "invalid credentials")
 		return
 	}
@@ -157,8 +196,9 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]bool{"totp_required": true})
 			return
 		}
-		if !a.checkTOTP(u.TOTP, in.Code) {
-			a.Store.Audit("anonymous", "login_failed", "")
+		if !a.consumeTOTP(u.ID, u.TOTP, in.Code) {
+			a.limiter.fail("admin", ip, in.Username)
+			a.Store.Audit("anonymous", "login_failed", loginAuditTarget(in.Username, ip))
 			apiError(w, http.StatusUnauthorized, "invalid credentials")
 			return
 		}
@@ -206,10 +246,10 @@ func (a *App) unseal(v string) (string, error) {
 	p, e := g.Open(nil, b[:g.NonceSize()], b[g.NonceSize():], []byte("EmbyRelay:v1"))
 	return string(p), e
 }
-func totp(secret, code string, now time.Time) bool {
+func totpStep(secret, code string, now time.Time) int64 {
 	key, e := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(secret)
 	if e != nil || len(code) != 6 {
-		return false
+		return -1
 	}
 	for offset := int64(-1); offset <= 1; offset++ {
 		b := make([]byte, 8)
@@ -220,14 +260,31 @@ func totp(secret, code string, now time.Time) bool {
 		p := sum[len(sum)-1] & 15
 		n := (binary.BigEndian.Uint32(sum[p:p+4]) & 0x7fffffff) % 1000000
 		if subtle.ConstantTimeCompare([]byte(fmt.Sprintf("%06d", n)), []byte(code)) == 1 {
-			return true
+			return now.Unix()/30 + offset
 		}
 	}
-	return false
+	return -1
 }
+func totp(secret, code string, now time.Time) bool { return totpStep(secret, code, now) >= 0 }
 func (a *App) checkTOTP(encrypted, code string) bool {
 	s, e := a.unseal(encrypted)
 	return e == nil && totp(s, code, time.Now())
+}
+func (a *App) consumeTOTP(userID, encrypted, code string) bool {
+	secret, err := a.unseal(encrypted)
+	if err != nil {
+		return false
+	}
+	step := totpStep(secret, code, time.Now())
+	if step < 0 {
+		return false
+	}
+	result, err := a.Store.DB.Exec("INSERT INTO totp_replay(user_id,step) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET step=excluded.step WHERE totp_replay.step<excluded.step", userID, step)
+	if err != nil {
+		return false
+	}
+	n, err := result.RowsAffected()
+	return err == nil && n == 1
 }
 func intParam(r *http.Request, key string, def int) int {
 	v, e := strconv.Atoi(r.URL.Query().Get(key))
@@ -242,6 +299,54 @@ func safeName(s string) bool {
 
 func verifyPassword(hash, value string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(value)) == nil
+}
+func (a *App) changeOwnPassword(w http.ResponseWriter, r *http.Request, user User) {
+	var in struct {
+		Current string `json:"current"`
+		Next    string `json:"next"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if !verifyPassword(user.PasswordHash, in.Current) {
+		apiError(w, 401, "current password is incorrect")
+		return
+	}
+	hash, err := password(in.Next)
+	if err != nil {
+		apiError(w, 400, err.Error())
+		return
+	}
+	tx, err := a.Store.DB.Begin()
+	if err != nil {
+		apiError(w, 500, "storage unavailable")
+		return
+	}
+	defer tx.Rollback()
+	updated, err := tx.Exec("UPDATE users SET password_hash=? WHERE id=? AND password_hash=?", hash, user.ID, user.PasswordHash)
+	if err != nil {
+		apiError(w, 500, "storage unavailable")
+		return
+	}
+	n, err := updated.RowsAffected()
+	if err != nil || n != 1 {
+		apiError(w, 409, "password changed; sign in again")
+		return
+	}
+	if _, err = tx.Exec("DELETE FROM login_sessions WHERE user_id=?", user.ID); err != nil {
+		apiError(w, 500, "storage unavailable")
+		return
+	}
+	if _, err = tx.Exec("INSERT INTO audit_logs(actor_id,action,target,created_at) VALUES(?,?,?,?)", user.ID, "change_own_password", user.ID, time.Now().Unix()); err != nil {
+		apiError(w, 500, "storage unavailable")
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		apiError(w, 500, "storage unavailable")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: "relay_session", Path: "/", MaxAge: -1, HttpOnly: true, Secure: a.SecureCookies, SameSite: http.SameSiteStrictMode})
+	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
 // SaveSecret/LoadSecret protect locally cached configuration with the data-dir master key.

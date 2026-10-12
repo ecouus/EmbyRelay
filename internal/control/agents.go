@@ -97,19 +97,20 @@ func (a *App) relays(w http.ResponseWriter, r *http.Request, u User, id string) 
 		return
 	}
 	if r.Method == "PATCH" {
-		v, e := get[Node](a.Store, "node", id)
-		if e != nil {
-			apiError(w, 404, "node not found")
-			return
-		}
 		var in struct {
 			Enabled bool `json:"enabled"`
 		}
 		if !decode(w, r, &in) {
 			return
 		}
-		v.Enabled = in.Enabled
-		a.mutate(w, func() error { return a.Store.put("node", id, v, u.ID) })
+		a.mutate(w, func() error {
+			v, err := get[Node](a.Store, "node", id)
+			if err != nil {
+				return fmt.Errorf("node not found")
+			}
+			v.Enabled = in.Enabled
+			return a.Store.put("node", id, v, u.ID)
+		})
 		return
 	}
 	apiError(w, 405, "method not allowed")
@@ -135,17 +136,20 @@ func (a *App) agentAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/api/v1/agent/enroll" && r.Method == "POST" {
-		if !a.limiter.allow(r.RemoteAddr) {
+		ip := clientIP(r)
+		if !a.limiter.allow("enroll", ip, "") {
 			apiError(w, 429, "too many enrollment attempts")
 			return
 		}
 		var in Enrollment
 		if json.Unmarshal(body, &in) != nil || !safeName(in.Name) {
+			a.limiter.fail("enroll", ip, "")
 			apiError(w, 400, "invalid enrollment")
 			return
 		}
 		pub, e := base64.RawStdEncoding.DecodeString(in.PublicKey)
 		if e != nil || !verifySigned(r, body, pub) {
+			a.limiter.fail("enroll", ip, "")
 			apiError(w, 401, "invalid enrollment signature")
 			return
 		}
@@ -170,6 +174,7 @@ func (a *App) agentAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		n, _ := result.RowsAffected()
 		if n != 1 {
+			a.limiter.fail("enroll", ip, "")
 			apiError(w, 401, "expired or consumed enrollment token")
 			return
 		}
@@ -282,6 +287,13 @@ func (a *App) agentAPI(w http.ResponseWriter, r *http.Request) {
 func (a *App) report(node Node, in Heartbeat) error {
 	a.configMu.Lock()
 	defer a.configMu.Unlock()
+	// Refresh under the same lock used by administrator updates. A heartbeat
+	// must not restore an older Enabled value after the node was disabled.
+	fresh, err := get[Node](a.Store, "node", node.ID)
+	if err != nil || !fresh.Enabled {
+		return fmt.Errorf("node disabled or unavailable")
+	}
+	node = fresh
 	state := a.state.Load()
 	allowed := map[string]bool{}
 	for _, r := range state.snapshot.Routes {

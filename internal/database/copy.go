@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"embyrelay/migrations"
 	"fmt"
 	"strings"
 )
@@ -11,7 +12,7 @@ import (
 // is read in one snapshot and the target is committed atomically. Callers must
 // stop all control servers and Agents before switching the database afterward.
 func Copy(ctx context.Context, source, target *DB, migrationID string) (map[string]int64, error) {
-	tables := []string{"users", "login_sessions", "objects", "settings", "traffic_daily", "audit_logs", "stream_sessions", "quota_leases", "remote_sessions", "enroll_tokens", "nonces", "relay_reports", "request_diagnostics", "access_usage", "access_tokens", "access_leases", "access_rate", "access_targets", "portal_sessions", "access_devices"}
+	tables := []string{"users", "login_sessions", "objects", "settings", "traffic_daily", "audit_logs", "stream_sessions", "quota_leases", "remote_sessions", "enroll_tokens", "nonces", "request_diagnostics", "access_usage", "access_tokens", "access_leases", "access_rate", "access_targets", "portal_sessions", "access_devices", "totp_replay"}
 	options := &sql.TxOptions{ReadOnly: true}
 	if source.Driver == "postgres" {
 		options.Isolation = sql.LevelRepeatableRead
@@ -37,8 +38,8 @@ func Copy(ctx context.Context, source, target *DB, migrationID string) (map[stri
 		}
 	}
 	var version int
-	if err = from.QueryRow("SELECT COALESCE(MAX(version),0) FROM schema_migrations").Scan(&version); err != nil || version != 10 {
-		return nil, fmt.Errorf("source must be upgraded to schema version 10 before copying")
+	if err = from.QueryRow("SELECT COALESCE(MAX(version),0) FROM schema_migrations").Scan(&version); err != nil || version != migrations.CurrentVersion {
+		return nil, fmt.Errorf("source must be upgraded to schema version %d before copying", migrations.CurrentVersion)
 	}
 	for _, table := range tables {
 		var count int64

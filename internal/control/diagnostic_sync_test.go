@@ -2,10 +2,25 @@ package control
 
 import (
 	"fmt"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestDiagnosticQueueFlushesBeforeStoreClose(t *testing.T) {
+	a, _ := testApp(t)
+	a.StartDiagnostics()
+	r := httptest.NewRequest("GET", "/unknown", nil)
+	for i := 0; i < 10; i++ {
+		a.ServeHTTP(httptest.NewRecorder(), r)
+	}
+	a.StopDiagnostics()
+	var count int
+	if err := a.Store.DB.QueryRow("SELECT COUNT(*) FROM request_diagnostics").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("queued diagnostics: %d %v", count, err)
+	}
+}
 
 func TestRemoteDiagnosticValidationAndRetention(t *testing.T) {
 	app, _ := testApp(t)

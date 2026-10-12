@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { requestAPI } from './api'
+
 import {computed,onMounted,onUnmounted,ref,watch} from 'vue'
 import {NAlert,NButton,NSelect,NSpin} from 'naive-ui'
 import DevicePolicyEditor from './DevicePolicyEditor.vue'
@@ -10,7 +12,7 @@ const sourceOptions=computed(()=>props.upstreams.map(u=>({label:u.name,value:u.i
 const accountOptions=computed(()=>[{label:'源站默认 · 所有关联账号',value:''},...accounts.value.filter(a=>props.upstreams.find(u=>u.id===source.value)?.owner_account_id===a.account.id || props.routes.some(r=>r.id===a.account.route_id&&r.upstream_id===source.value)).map(a=>({label:'账号覆盖 · '+a.account.username,value:a.account.id}))])
 const defaultModeLabel=computed(()=>({original:'原始标识',stable:'稳定标识',custom:'自定义标识',grouped:'身份分组'} as Record<string,string>)[defaultPolicy.value?.mode]||'兼容默认')
 const endpoint=()=>account.value?'access-accounts/'+account.value+'/device-policy?upstream_id='+encodeURIComponent(source.value):'upstreams/'+source.value+'/device-policy'
-async function api(path:string,method='GET',body?:any){const r=await fetch('/api/v1/'+path,{method,headers:{'Content-Type':'application/json','X-Requested-With':'EmbyRelay'},body:body===undefined?undefined:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw Error(data.error||'请求失败');return data}
+async function api(path:string,method='GET',body?:any){const {response:r,data:data}=await requestAPI('/api/v1/'+path,method,body);if(!r.ok)throw Error(data.error||'请求失败');return data}
 async function run(fn:()=>Promise<void>){busy.value=true;error.value='';try{await fn()}catch(e){error.value=e instanceof Error?e.message:String(e)}finally{busy.value=false}}
 async function refreshRecords(){const selected=source.value+':'+account.value;const data=await api('device-records?upstream_id='+encodeURIComponent(source.value)+(account.value?'&account_id='+encodeURIComponent(account.value):''));if(selected===source.value+':'+account.value)records.value=data}
 async function load(){ready.value=false;notice.value='';if(!source.value)return;const [data,list]=await Promise.all([api(endpoint()),api('access-accounts')]);accounts.value=list;policy.value=data.policy;defaultPolicy.value=data.default_policy;await refreshRecords();ready.value=true}
@@ -20,7 +22,7 @@ watch(source,()=>{account.value='';run(load)})
 watch(account,()=>{if(!busy.value)run(load)})
 watch(()=>props.upstreams,()=>{if(!props.upstreams.some(u=>u.id===source.value))source.value=props.upstreams[0]?.id||''})
 let timer:ReturnType<typeof setInterval>|undefined
-onMounted(()=>{run(load);timer=setInterval(()=>{if(!busy.value&&ready.value)refreshRecords().catch(e=>error.value=e.message)},15000)})
+onMounted(()=>{run(load);timer=setInterval(()=>{if(!busy.value&&ready.value&&!document.hidden)refreshRecords().catch(e=>error.value=e.message)},15000)})
 onUnmounted(()=>clearInterval(timer))
 </script>
 <template>

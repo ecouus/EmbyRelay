@@ -28,5 +28,5 @@ COPY --from=backend /out/dbmigrate /usr/local/bin/embyrelay-db-migrate
 USER relay
 ENV RELAY_LISTEN=0.0.0.0:6689 RELAY_DATA_DIR=/data
 EXPOSE 6689
-HEALTHCHECK --interval=30s --timeout=5s CMD wget -q -O /dev/null http://127.0.0.1:6689/healthz || exit 1
+HEALTHCHECK --interval=30s --timeout=5s CMD wget -q -O /dev/null "http://127.0.0.1:${RELAY_LISTEN##*:}/healthz" || exit 1
 ENTRYPOINT ["/usr/local/bin/embyrelay"]

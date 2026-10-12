@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"strings"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -35,6 +36,11 @@ func Open(driver, source string) (*DB, error) {
 	name := driver
 	if name == "postgres" {
 		name = "pgx"
+	} else {
+		query := url.Values{}
+		query.Add("_pragma", "busy_timeout(5000)")
+		query.Add("_pragma", "foreign_keys(ON)")
+		source += "?" + query.Encode()
 	}
 	raw, err := sql.Open(name, source)
 	if err != nil {

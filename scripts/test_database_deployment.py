@@ -76,7 +76,7 @@ class DockerDatabaseTests(unittest.TestCase):
 
     def test_postgres_backup_restore_and_password_reset(self):
         config = self.install('postgres')
-        self.assertEqual(self.sql('SELECT MAX(version) FROM schema_migrations'), '10')
+        self.assertEqual(self.sql('SELECT MAX(version) FROM schema_migrations'), '12')
         self.sql("INSERT INTO settings VALUES('integration_marker','before')")
         installer.backup(self.compose, self.directory, config)
         backup = next((self.directory / 'backups').glob('*.tar.gz'))

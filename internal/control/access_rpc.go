@@ -102,13 +102,27 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 		if in.RefundBytes < 0 || in.RefundBytes > streamAccessChunk {
 			return denied("invalid refund")
 		}
+		var chargedCycle string
+		var chargedBytes, leaseExpires int64
+		err = tx.QueryRow("SELECT charged_cycle,charged_bytes,expires_at FROM access_leases WHERE id=? AND account_id=? AND node_id=? AND token_hash=?", in.Lease, c.ID, node, leaseHash).Scan(&chargedCycle, &chargedBytes, &leaseExpires)
+		if err == sql.ErrNoRows {
+			return AccessResult{}, tx.Commit()
+		}
+		if err != nil {
+			return denied("订阅服务不可用")
+		}
+		if in.RefundBytes > 0 && (chargedCycle == "" || in.RefundBytes > chargedBytes) {
+			return denied("invalid refund")
+		}
+		if in.RefundBytes > 0 && leaseExpires <= now.Add(-accessSettlementGrace).Unix() {
+			return denied("播放结算已过期")
+		}
 		result, deleteErr := tx.Exec("DELETE FROM access_leases WHERE id=? AND account_id=? AND node_id=? AND token_hash=?", in.Lease, c.ID, node, leaseHash)
 		err = deleteErr
 		if err == nil && in.RefundBytes > 0 {
 			n, _ := result.RowsAffected()
 			if n > 0 {
-				cycle, _ := accountCycle(c, now)
-				_, err = tx.Exec("UPDATE access_usage SET bytes=CASE WHEN bytes>=? THEN bytes-? ELSE 0 END WHERE account_id=? AND cycle=?", in.RefundBytes*2, in.RefundBytes*2, c.ID, cycle)
+				_, err = tx.Exec("UPDATE access_usage SET bytes=CASE WHEN bytes>=? THEN bytes-? ELSE 0 END,retired_at=0 WHERE account_id=? AND cycle=?", in.RefundBytes*2, in.RefundBytes*2, c.ID, chargedCycle)
 			}
 		}
 		if err == nil && in.Status >= 100 && in.Status <= 599 {
@@ -171,7 +185,9 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 				return denied("设备状态更新失败")
 			}
 		}
-		tx.Exec("DELETE FROM access_leases WHERE expires_at<=?", now.Unix())
+		if _, err = tx.Exec("DELETE FROM access_leases WHERE expires_at<=?", now.Add(-accessSettlementGrace).Unix()); err != nil {
+			return denied("会话清理失败")
+		}
 		var n int
 		if in.Stream {
 			if err = tx.QueryRow("SELECT COUNT(*) FROM access_leases WHERE account_id=? AND is_stream=1 AND expires_at>?", c.ID, now.Unix()).Scan(&n); err != nil {
@@ -186,7 +202,7 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 		if in.Stream {
 			isStream = 1
 		}
-		if _, err = tx.Exec("INSERT INTO access_leases VALUES(?,?,?,?,?,?)", out.Lease, c.ID, leaseHash, node, now.Unix()+30, isStream); err != nil {
+		if _, err = tx.Exec("INSERT INTO access_leases(id,account_id,token_hash,node_id,expires_at,is_stream) VALUES(?,?,?,?,?,?)", out.Lease, c.ID, leaseHash, node, now.Unix()+30, isStream); err != nil {
 			return denied("会话创建失败")
 		}
 		if !in.PublicImage {
@@ -213,7 +229,10 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 			if c.Plan.TrafficBytes > 0 && billedBytes > c.Plan.TrafficBytes-used {
 				return denied("本周期剩余流量不足")
 			}
-			if _, err = tx.Exec("INSERT INTO access_usage VALUES(?,?,?) ON CONFLICT(account_id,cycle) DO UPDATE SET bytes=access_usage.bytes+excluded.bytes", c.ID, cycle, billedBytes); err != nil {
+			if _, err = tx.Exec("INSERT INTO access_usage(account_id,cycle,bytes) VALUES(?,?,?) ON CONFLICT(account_id,cycle) DO UPDATE SET bytes=access_usage.bytes+excluded.bytes,retired_at=0", c.ID, cycle, billedBytes); err != nil {
+				return denied("流量计费失败")
+			}
+			if _, err = tx.Exec("UPDATE access_leases SET charged_cycle=?,charged_bytes=? WHERE id=?", cycle, in.Bytes, in.Lease); err != nil {
 				return denied("流量计费失败")
 			}
 			if c.Plan.RateBPS > 0 {

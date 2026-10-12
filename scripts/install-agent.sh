@@ -81,7 +81,7 @@ def configuration(control, public_domain, name, token, key, mode):
         'name': 'embyrelay-agent',
         'x-embyrelay-installer': {'version': 2, 'mode': mode, 'domain': public_domain},
         'services': {'agent': {
-            'image': 'ecouus/embyrelay:latest',
+            'image': os.environ.get('RELAY_IMAGE', 'ecouus/embyrelay:latest'),
             'entrypoint': ['/usr/local/bin/embyrelay-agent'],
             'environment': {'RELAY_LISTEN': '0.0.0.0:6689', 'RELAY_CONTROL_URL': control,
                 'RELAY_PUBLIC_URL': 'https://' + public_domain, 'RELAY_NODE_NAME': name,
@@ -348,7 +348,7 @@ def main():
             setup_nginx([], directory, path, configuration(control, host, name, "", key, mode))
             proxy_ready = True
             print('正在拉取镜像；完成后再输入一次性令牌，避免下载期间过期。', flush=True)
-            subprocess.run(['docker', 'pull', 'ecouus/embyrelay:latest'], check=True)
+            subprocess.run(['docker', 'pull', os.environ.get('RELAY_IMAGE', 'ecouus/embyrelay:latest')], check=True)
             token = args.token or ask('A 面板一次性注册令牌（10 分钟有效）')
             if not token:
                 raise ValueError('注册令牌不能为空')

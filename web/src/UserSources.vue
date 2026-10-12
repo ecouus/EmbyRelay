@@ -22,7 +22,7 @@ async function copyAddress(address:Address){
  try{await navigator.clipboard.writeText(addressURL(address));notice.value='中转地址已复制'}catch{error.value='复制失败，请选中中转地址手动复制'}
 }
 watch(()=>props.accountId,()=>{sources.value=[];notice.value='';search.value='';refresh()})
-onMounted(()=>{refresh();timer=setInterval(()=>{if(!busy.value)refresh()},15000)})
+onMounted(()=>{refresh();timer=setInterval(()=>{if(!busy.value&&!document.hidden)refresh()},15000)})
 onUnmounted(()=>{clearInterval(timer);sequence++;sources.value=[]})
 </script>
 <template>

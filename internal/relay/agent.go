@@ -43,7 +43,7 @@ type Identity struct {
 	ControlURL string `json:"control_url"`
 }
 type Agent struct {
-	quotaMu    sync.Mutex
+	quotaLocks sync.Map
 	App        *control.App
 	Store      *control.Store
 	Identity   Identity
@@ -66,7 +66,9 @@ func New(app *control.App, store *control.Store, dir, endpoint, controlURL, name
 	if e != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || (u.Scheme != "https" && !(insecure && u.Scheme == "http")) {
 		return nil, fmt.Errorf("control URL requires HTTPS; HTTP needs RELAY_ALLOW_INSECURE=true")
 	}
-	a := &Agent{App: app, Store: store, URL: strings.TrimRight(controlURL, "/"), Client: &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(r *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}, OfflineTTL: 24 * time.Hour}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = 64
+	a := &Agent{App: app, Store: store, URL: strings.TrimRight(controlURL, "/"), Client: &http.Client{Transport: transport, Timeout: 15 * time.Second, CheckRedirect: func(r *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}, OfflineTTL: 24 * time.Hour}
 	app.AgentMode = true
 	path := filepath.Join(dir, "identity.json")
 	b, e := os.ReadFile(path)
@@ -195,10 +197,12 @@ func (a *Agent) Sync(ctx context.Context) error {
 	if snap.Version < a.version || time.Since(time.Unix(snap.GeneratedAt, 0)) > 5*time.Minute || time.Unix(snap.GeneratedAt, 0).After(time.Now().Add(time.Minute)) {
 		return fmt.Errorf("stale configuration")
 	}
-	if e = a.App.SaveSecret("agent_snapshot", string(control.Encode(signed))); e != nil {
-		return e
+	if a.version == 0 || snap.Version != a.version {
+		if e = a.App.Apply(snap); e != nil {
+			return e
+		}
 	}
-	if e = a.App.Apply(snap); e != nil {
+	if e = a.App.SaveSecret("agent_snapshot", string(control.Encode(signed))); e != nil {
 		return e
 	}
 	a.version = snap.Version
@@ -291,8 +295,10 @@ func (a *Agent) Run(ctx context.Context) {
 }
 
 func (a *Agent) acquireQuota(ctx context.Context, route control.Route, needed int64) error {
-	a.quotaMu.Lock()
-	defer a.quotaMu.Unlock()
+	value, _ := a.quotaLocks.LoadOrStore(route.ID, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
 	day := time.Now().UTC().Format("2006-01-02")
 	grant, used, e := a.Store.AgentBudget(route.ID, day)
 	if e != nil {
@@ -301,7 +307,10 @@ func (a *Agent) acquireQuota(ctx context.Context, route control.Route, needed in
 	if grant-used >= needed {
 		return nil
 	}
-	target := grant + 8*1024*1024
+	target := grant + 32*1024*1024
+	if minimum := used + needed; target < minimum {
+		target = minimum
+	}
 	if target > route.DailyQuota {
 		target = route.DailyQuota
 	}

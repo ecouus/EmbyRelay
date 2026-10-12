@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	_ "modernc.org/sqlite"
 	"os"
 	"path/filepath"
@@ -364,11 +365,20 @@ func (s *Store) Audit(actor, action, target string) error {
 }
 func (s *Store) Cleanup() {
 	now := time.Now().Unix()
+	s.DB.Exec("DELETE FROM request_diagnostics WHERE node_id='' AND id NOT IN (SELECT id FROM request_diagnostics WHERE node_id='' ORDER BY created_at DESC,id DESC LIMIT 1000)")
+	s.DB.Exec("DELETE FROM audit_logs WHERE created_at<?", now-365*86400)
+	s.DB.Exec("DELETE FROM traffic_daily WHERE date<?", time.Unix(now-365*86400, 0).UTC().Format("2006-01-02"))
+	s.DB.Exec("DELETE FROM quota_leases WHERE date<?", time.Unix(now-90*86400, 0).UTC().Format("2006-01-02"))
 	s.DB.Exec("DELETE FROM remote_sessions WHERE updated_at<?", now-30*86400)
 	s.DB.Exec("DELETE FROM login_sessions WHERE expires_at<?", now)
 	s.DB.Exec("DELETE FROM access_tokens WHERE expires_at<=?", now)
 	s.DB.Exec("DELETE FROM portal_sessions WHERE expires_at<=?", now)
-	s.DB.Exec("DELETE FROM access_leases WHERE expires_at<=?", now)
+	// Authorization still expires after 30 seconds. Keep expired leases briefly
+	// so a delayed finish can refund the cycle in which its last chunk was charged.
+	s.DB.Exec("DELETE FROM access_leases WHERE expires_at<=?", now-int64(accessSettlementGrace/time.Second))
+	if err := s.cleanupAccessUsage(time.Unix(now, 0)); err != nil {
+		slog.Error("subscription usage cleanup failed", "error", err)
+	}
 	s.DB.Exec("DELETE FROM access_targets WHERE expires_at<=? OR NOT EXISTS (SELECT 1 FROM access_tokens WHERE hash=access_targets.token_hash)", now)
 	s.DB.Exec("DELETE FROM access_devices WHERE last_seen<?", now-90*86400)
 	s.DB.Exec("DELETE FROM nonces WHERE created_at<?", now-600)

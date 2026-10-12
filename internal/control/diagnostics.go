@@ -78,7 +78,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(reason, "回源") {
 			source = "upstream"
 		}
-		a.Store.RecordDiagnostic(Diagnostic{ID: id, Status: dw.status, Reason: reason, CreatedAt: time.Now().Unix(), Method: r.Method, Path: diagnosticPath(r), Source: source, Details: string(encoded)})
+		if (dw.status == 404 || dw.status == 401 && reason == "本机请求未匹配或被拒绝") && a.diagnosticSample.Add(1)%10 != 0 {
+			return
+		}
+		a.recordDiagnostic(Diagnostic{ID: id, Status: dw.status, Reason: reason, CreatedAt: time.Now().Unix(), Method: r.Method, Path: diagnosticPath(r), Source: source, Details: string(encoded)})
 	}()
 	a.serveHTTP(dw, r.WithContext(context.WithValue(context.WithValue(r.Context(), diagnosticKey{}, &reason), detailKey{}, detail)))
 }

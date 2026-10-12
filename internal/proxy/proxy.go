@@ -44,11 +44,11 @@ func New(cfg Config) *Gateway {
 	if cfg.ReadTimeout <= 0 {
 		cfg.ReadTimeout = 30 * time.Second
 	}
-	newTransport := func() *http.Transport {
-		return &http.Transport{DialContext: cfg.Network.DialContext, ForceAttemptHTTP2: true, MaxIdleConns: 128, MaxIdleConnsPerHost: 32, MaxConnsPerHost: cfg.MaxConcurrent, IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 15 * time.Second, DisableCompression: true}
+	newTransport := func(headerTimeout time.Duration) *http.Transport {
+		return &http.Transport{DialContext: cfg.Network.DialContext, ForceAttemptHTTP2: true, MaxIdleConns: 128, MaxIdleConnsPerHost: 32, MaxConnsPerHost: cfg.MaxConcurrent, IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: headerTimeout, DisableCompression: true}
 	}
-	g := &Gateway{cfg: cfg, transport: &policyTransport{base: newTransport(), cfg: cfg}, slots: make(chan struct{}, cfg.MaxConcurrent), key: sha256.Sum256([]byte(cfg.AccessKey))}
-	g.api = &httputil.ReverseProxy{Transport: &policyTransport{base: newTransport(), cfg: cfg}, Rewrite: func(pr *httputil.ProxyRequest) {
+	g := &Gateway{cfg: cfg, transport: &policyTransport{base: newTransport(45 * time.Second), cfg: cfg}, slots: make(chan struct{}, cfg.MaxConcurrent), key: sha256.Sum256([]byte(cfg.AccessKey))}
+	g.api = &httputil.ReverseProxy{Transport: &policyTransport{base: newTransport(45 * time.Second), cfg: cfg}, Rewrite: func(pr *httputil.ProxyRequest) {
 		pr.SetURL(cfg.Upstream)
 		pr.Out.Header.Del("X-Relay-Key")
 		pr.Out.Header.Del("Referer")
@@ -84,10 +84,6 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// Static Emby video and audio endpoints only. Other requests use the standard
 	// proxy, including WebSocket upgrades and POST bodies, without application retries.
-	if _, ok := r.Context().Value(accessProtectionKey{}).(accessProtection); ok {
-		g.api.ServeHTTP(w, r)
-		return
-	}
 	p := strings.ToLower(r.URL.Path)
 	if r.Method == http.MethodGet && (strings.HasPrefix(p, "/videos/") || strings.HasPrefix(p, "/audio/") || strings.HasPrefix(p, "/emby/videos/") || strings.HasPrefix(p, "/emby/audio/")) && (strings.HasSuffix(p, "/stream") || strings.Contains(p, "/stream.")) && !strings.Contains(r.Header.Get("Range"), ",") {
 		g.stream(w, r)
@@ -164,6 +160,26 @@ func (g *Gateway) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { resp.Body.Close() }()
+	if _, protected := r.Context().Value(accessProtectionKey{}).(accessProtection); protected {
+		contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+		if resp.StatusCode >= 300 && resp.StatusCode < 400 || strings.Contains(contentType, "json") || strings.Contains(contentType, "mpegurl") || strings.HasSuffix(strings.ToLower(r.URL.Path), ".m3u8") {
+			if err := g.modifyResponse(resp); err != nil {
+				reportError(r.Context(), err)
+				http.Error(w, "upstream response unavailable", 502)
+				return
+			}
+			stripHop(resp.Header)
+			for key, values := range resp.Header {
+				for _, value := range values {
+					w.Header().Add(key, value)
+				}
+			}
+			w.WriteHeader(resp.StatusCode)
+			_, _ = io.Copy(w, resp.Body)
+			return
+		}
+		resp.Header.Del("Set-Cookie")
+	}
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 && resp.StatusCode != 304 && g.cfg.Mode != "redirect" && g.cfg.Mode != "auto" {
 		report(r.Context(), "回源媒体重定向被拒绝")
 		http.Error(w, "upstream redirect denied", 502)

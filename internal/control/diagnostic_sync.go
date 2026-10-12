@@ -27,17 +27,22 @@ type DiagnosticAck struct {
 }
 
 func (s *Store) RecordDiagnostic(d Diagnostic) error {
+	return s.RecordDiagnostics([]Diagnostic{d})
+}
+
+func (s *Store) RecordDiagnostics(records []Diagnostic) error {
+	if len(records) == 0 {
+		return nil
+	}
 	tx, err := s.DB.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec("INSERT INTO request_diagnostics(id,status,reason,created_at,method,path,source,details) VALUES(?,?,?,?,?,?,?,?)", d.ID, d.Status, d.Reason, d.CreatedAt, d.Method, d.Path, d.Source, d.Details); err != nil {
-		return err
-	}
-	// Bound each node independently so a noisy node cannot evict other nodes.
-	if _, err = tx.Exec("DELETE FROM request_diagnostics WHERE node_id='' AND id NOT IN (SELECT id FROM request_diagnostics WHERE node_id='' ORDER BY created_at DESC,id DESC LIMIT 1000)"); err != nil {
-		return err
+	for _, d := range records {
+		if _, err = tx.Exec("INSERT INTO request_diagnostics(id,status,reason,created_at,method,path,source,details) VALUES(?,?,?,?,?,?,?,?)", d.ID, d.Status, d.Reason, d.CreatedAt, d.Method, d.Path, d.Source, d.Details); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

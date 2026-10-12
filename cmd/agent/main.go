@@ -37,6 +37,8 @@ func run() error {
 	if e != nil {
 		return e
 	}
+	app.StartDiagnostics()
+	defer app.StopDiagnostics()
 	agent, e := relay.New(app, store, dir, os.Getenv("RELAY_PUBLIC_URL"), os.Getenv("RELAY_CONTROL_URL"), os.Getenv("RELAY_NODE_NAME"), os.Getenv("RELAY_ENROLL_TOKEN"), os.Getenv("RELAY_SERVER_KEY"), os.Getenv("RELAY_ALLOW_INSECURE") == "true")
 	if e != nil {
 		return e
@@ -50,8 +52,11 @@ func run() error {
 		addr = "127.0.0.1:8081"
 	}
 	srv := &http.Server{Addr: addr, Handler: app, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 * 1024}
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
+		app.CloseHijacked()
 		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if srv.Shutdown(shutdown) != nil {
@@ -65,6 +70,7 @@ func run() error {
 		e = srv.ListenAndServe()
 	}
 	if e == http.ErrServerClosed {
+		<-shutdownDone
 		return nil
 	}
 	return e

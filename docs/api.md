@@ -113,7 +113,7 @@ POST /api/v1/upstreams/{id}/credentials：仅管理员，要求登录和 X-Reque
 | 字段权限 | 不接收 owner / quota / relay_id / allowed_cidrs 等管理字段 |
 | 到期账号 | 可读取个人信息 |
 | 停用、改密、撤销 | 同时撤销用户中心会话 |
-| 数据库迁移 | 当前版本 10 |
+| 数据库迁移 | 当前版本 12 |
 
 订阅额度使用双向折算：charge.bytes 仍传实际输出块大小，由控制端统一按 2 倍扣减 access_usage；限速按原始 bytes 计算。旧用量不追溯翻倍，普通路由上下行统计不变。该规则为成本折算，不等于厂商网卡账单。
 

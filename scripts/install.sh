@@ -31,7 +31,7 @@ import time
 import urllib.request
 
 PROJECT = 'embyrelay-managed'
-IMAGE = 'ecouus/embyrelay:latest'
+IMAGE = os.environ.get('RELAY_IMAGE', 'ecouus/embyrelay:latest')
 VOLUMES = ['relay_data', 'postgres_data']
 POSTGRES_IMAGE = 'postgres:17-alpine'
 
@@ -314,10 +314,10 @@ def check_https(host):
     return False
 
 
-def backup(compose, directory, config=None):
+def backup(compose, directory, config=None, automatic=False):
     backups = directory / 'backups'
     backups.mkdir(mode=0o700, exist_ok=True)
-    destination = backups / (time.strftime('%Y%m%d-%H%M%S') + '-' + str(time.time_ns()) + '.tar.gz')
+    destination = backups / (('auto-' if automatic else '') + time.strftime('%Y%m%d-%H%M%S') + '-' + str(time.time_ns()) + '.tar.gz')
     run(compose + ['stop', 'embyrelay'])
     try:
         if config is not None and database_type(config) == 'postgres':
@@ -346,6 +346,13 @@ def backup(compose, directory, config=None):
     finally:
         run(compose + ['start', 'embyrelay'])
     print('升级前数据备份（含数据库和密钥）：' + str(destination))
+    return destination
+
+
+def prune_automatic_backups(directory, keep=5):
+    backups = sorted((directory / 'backups').glob('auto-*.tar.gz'), key=lambda item: item.stat().st_mtime, reverse=True)
+    for old in backups[keep:]:
+        old.unlink()
 
 
 def reset_password(compose, username, secret):
@@ -366,7 +373,7 @@ def validate_data_archive(path):
                 raise ValueError('备份含不安全路径或特殊文件，拒绝恢复')
 
 
-def restore(compose, directory, config, backup_file):
+def restore(compose, directory, config, backup_file, automatic=False):
     source = Path(backup_file).expanduser().resolve()
     if not source.is_file():
         raise ValueError('备份文件不存在')
@@ -391,10 +398,11 @@ def restore(compose, directory, config, backup_file):
             with tarfile.open(data, 'r:gz') as archive:
                 if 'embyrelay.db' not in {str(Path(m.name)) for m in archive.getmembers()}:
                     raise ValueError('SQLite 备份缺少数据库文件，或备份类型不匹配')
-        if ask('恢复将覆盖当前数据；输入 RESTORE 继续', '') != 'RESTORE':
+        if not automatic and ask('恢复将覆盖当前数据；输入 RESTORE 继续', '') != 'RESTORE':
             print('已取消恢复')
             return
-        backup(compose, directory, config)
+        if not automatic:
+            backup(compose, directory, config)
         run(compose + ['stop', 'embyrelay'])
         try:
             if dump is not None:
@@ -704,11 +712,19 @@ def main():
             print('管理员用户名：' + config['x-embyrelay-installer']['admin'] + '（密码为你输入的密码）')
         elif action == 'upgrade':
             # Back up using the current image before pulling a newer image/migration.
-            backup(compose, directory, config)
+            previous_image = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}', IMAGE], text=True).strip()
+            saved_backup = backup(compose, directory, config, automatic=True)
             setup_nginx(compose, directory, path, config)
-            run(compose + ['pull'])
-            start(compose, path, config)
+            try:
+                run(compose + ['pull'])
+                start(compose, path, config)
+            except BaseException:
+                print('升级失败，正在恢复升级前镜像和数据…', file=sys.stderr)
+                run(['docker', 'tag', previous_image, IMAGE])
+                restore(compose, directory, config, saved_backup, automatic=True)
+                raise
             check_https(config['x-embyrelay-installer']['domain'])
+            prune_automatic_backups(directory)
         elif action == 'backup':
             backup(compose, directory, config)
         elif action == 'migrate-db':

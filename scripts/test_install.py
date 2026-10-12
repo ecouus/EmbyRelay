@@ -238,6 +238,17 @@ class MainInstallerTests(unittest.TestCase):
             self.assertFalse(installer.check_https('relay.example.com'))
         self.assertIn('尚未验证通过', output.getvalue())
 
+    def test_prune_only_automatic_backups(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp) / 'backups'
+            folder.mkdir()
+            for index in range(7):
+                (folder / f'auto-{index}.tar.gz').write_bytes(b'backup')
+            (folder / 'manual.tar.gz').write_bytes(b'keep')
+            installer.prune_automatic_backups(Path(temp), keep=5)
+            self.assertEqual(len(list(folder.glob('auto-*.tar.gz'))), 5)
+            self.assertTrue((folder / 'manual.tar.gz').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

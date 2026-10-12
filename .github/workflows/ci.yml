@@ -42,3 +42,14 @@ jobs:
           EMBYRELAY_TEST_POSTGRES_URL: postgres://postgres:integration-test-only@127.0.0.1:15432/embyrelay_test?sslmode=disable
       - run: go vet ./...
       - run: go build ./cmd/server && go build ./cmd/agent && go build ./cmd/dbmigrate
+      - name: Container startup smoke test
+        run: |
+          docker build -f deploy/Dockerfile -t embyrelay:ci .
+          docker run -d --rm --name embyrelay-ci -e RELAY_ADMIN_USER=ci -e RELAY_ADMIN_PASSWORD=ci-smoke-password -e RELAY_ALLOW_INSECURE=true -p 127.0.0.1:16689:6689 embyrelay:ci
+          trap 'docker rm -f embyrelay-ci >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:16689/healthz; then exit 0; fi
+            sleep 2
+          done
+          docker logs embyrelay-ci
+          exit 1

@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -326,13 +327,16 @@ func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeR
 				q.Header.Del(header)
 			}
 		}
-		base := *target
-		base.Path = ""
-		base.RawPath = ""
-		base.RawQuery = ""
-		gateway = proxy.New(proxy.Config{Upstream: &base, Network: policy, TrustedAuth: true, AutoMediaRedirect: true, Mode: "proxy", MaxConcurrent: rr.route.MaxConcurrent})
-		previous := done
-		done = func() { gateway.CloseIdleConnections(); previous() }
+		if same && (source.Path == "" || source.Path == "/") {
+			gateway = rr.gateway
+		} else {
+			base := *target
+			base.Path = ""
+			base.RawPath = ""
+			base.RawQuery = ""
+			cacheKey := fmt.Sprintf("%d:%s:%s://%s:%v:%d", a.state.Load().snapshot.Version, rr.route.ID, base.Scheme, base.Host, upstream.AllowedCIDRs, rr.route.MaxConcurrent)
+			gateway = a.mediaGateway(cacheKey, proxy.Config{Upstream: &base, Network: policy, TrustedAuth: true, AutoMediaRedirect: true, Mode: "proxy", MaxConcurrent: rr.route.MaxConcurrent})
+		}
 		q = q.WithContext(proxy.WithForcedMedia(requestContext))
 	}
 	wrap := func(target string) (string, error) {

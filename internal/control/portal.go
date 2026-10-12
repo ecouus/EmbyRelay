@@ -17,10 +17,6 @@ func (a *App) portal(w http.ResponseWriter, r *http.Request) {
 	}
 	p := strings.TrimPrefix(r.URL.Path, "/api/v1/portal/")
 	if p == "login" && r.Method == "POST" {
-		if !a.limiter.allow(r.RemoteAddr) {
-			apiError(w, 429, "尝试过多，请稍后重试")
-			return
-		}
 		var in struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
@@ -265,6 +261,11 @@ func (a *App) portalSources(w http.ResponseWriter, c AccessAccount) {
 
 // portalLogin authenticates a subscriber after the caller applies rate limiting.
 func (a *App) portalLogin(w http.ResponseWriter, r *http.Request, username, password string) {
+	ip := clientIP(r)
+	if !a.limiter.allow("portal", ip, username) {
+		apiError(w, 429, "尝试过多，请稍后重试")
+		return
+	}
 	var raw string
 	rows, err := a.Store.DB.Query("SELECT payload FROM objects WHERE kind='access_account' AND lower(json_extract(payload,'$.username'))=lower(?)", username)
 	if err != nil {
@@ -286,6 +287,7 @@ func (a *App) portalLogin(w http.ResponseWriter, r *http.Request, username, pass
 		hash = a.dummyHash
 	}
 	if !verifyPassword(hash, password) || count != 1 || err != nil || !c.Enabled {
+		a.limiter.fail("portal", ip, username)
 		apiError(w, 401, "用户名或密码错误，或账号已停用")
 		return
 	}

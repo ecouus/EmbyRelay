@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { requestAPI } from './api'
+
 import BrandLogo from './BrandLogo.vue'
 import UiIcon from './UiIcon.vue'
 import DeviceRecords from './DeviceRecords.vue'
@@ -11,7 +13,7 @@ const emit=defineEmits(['theme','logout'])
 const me=ref<any>(null),sources=ref<any[]>([]),username=ref(''),password=ref(''),error=ref(''),busy=ref(false),modal=ref(false),form=ref<any>({}),delivery=ref(''),notice=ref('')
 const date=(n:number)=>n?new Date(n*1000).toLocaleString('zh-CN'):'长期有效'
 const bytes=(n:number)=>n>=1073741824?(n/1073741824).toFixed(2)+' GiB':(n/1048576).toFixed(2)+' MiB'
-async function api(path:string,method='GET',body?:any){const r=await fetch('/api/v1/portal/'+path,{method,headers:{'Content-Type':'application/json','X-Requested-With':'EmbyRelay'},body:body===undefined?undefined:JSON.stringify(body)});const d=await r.json();if(!r.ok){if(r.status===401&&path!=='login'){me.value=null;sources.value=[];delivery.value='';modal.value=false;deviceModal.value=false;deviceRecords.value=[];emit('logout')}throw Error(d.error||'请求失败')}return d}
+async function api(path:string,method='GET',body?:any){const {response:r,data:d}=await requestAPI('/api/v1/portal/'+path,method,body);if(!r.ok){if(r.status===401&&path!=='login'){me.value=null;sources.value=[];delivery.value='';modal.value=false;deviceModal.value=false;deviceRecords.value=[];emit('logout')}throw Error(d.error||'请求失败')}return d}
 async function run(fn:()=>Promise<void>){busy.value=true;error.value='';try{await fn()}catch(e){error.value=String(e instanceof Error?e.message:e)}finally{busy.value=false}}
 async function refresh(){me.value=await api('me');sources.value=await api('sources')}
 async function login(){await run(async()=>{await api('login','POST',{username:username.value,password:password.value});password.value='';await refresh()})}
@@ -21,7 +23,7 @@ async function save(){await run(async()=>{const {id,...body}=form.value;if(id&&!
 async function remove(s:any){if(!window.confirm('删除 '+s.name+'？该源站的中转地址会失效，已用流量保留。'))return;await run(async()=>{await api('sources/'+s.id,'DELETE');await refresh()})}
 function show(s:any){const addresses=s.connection_addresses?.length?s.connection_addresses.map((a:any)=>(a.origin||location.origin).replace(/\/$/,'')+a.path):s.addresses.map((p:string)=>location.origin+p);delivery.value=`名称：${s.name}\n源站地址：${s.base_url}\n中转服务器地址：${addresses.join('\n')}\n登录用户名：${me.value.account.username}\n登录密码：使用你的用户中心密码\n所有地址共享账户流量和有效期；下载 1 GiB 按双向折算扣除 2 GiB。`}
 let timer:ReturnType<typeof setInterval>|undefined
-onMounted(async()=>{try{await refresh()}catch{}timer=setInterval(()=>{if(me.value&&!busy.value&&!modal.value)refresh().catch(e=>error.value=e.message)},15000)})
+onMounted(async()=>{try{await refresh()}catch{}timer=setInterval(()=>{if(me.value&&!busy.value&&!modal.value&&!document.hidden)refresh().catch(e=>error.value=e.message)},15000)})
 onUnmounted(()=>clearInterval(timer))
 </script>
 <template>

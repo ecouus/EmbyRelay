@@ -47,4 +47,23 @@ func TestTwoStepLogin(t *testing.T) {
 	if r.Code != 200 || len(r.Result().Cookies()) != 1 {
 		t.Fatalf("login failed: %d %s", r.Code, r.Body.String())
 	}
+	replayed := call(t, a, nil, "POST", "/api/v1/auth/login", map[string]string{"username": "admin", "password": "test-password-123", "code": code})
+	if replayed.Code != 401 {
+		t.Fatalf("TOTP code reused: %d", replayed.Code)
+	}
+}
+
+func TestChangeOwnPasswordRevokesExistingSession(t *testing.T) {
+	a, cookie := testApp(t)
+	changed := call(t, a, cookie, "POST", "/api/v1/auth/password", map[string]string{"current": "test-password-123", "next": "new-test-password-456"})
+	if changed.Code != 200 {
+		t.Fatalf("password change: %d %s", changed.Code, changed.Body.String())
+	}
+	if old := call(t, a, cookie, "GET", "/api/v1/auth/me", nil); old.Code != 401 {
+		t.Fatalf("old session: %d", old.Code)
+	}
+	login := call(t, a, nil, "POST", "/api/v1/auth/login", map[string]string{"username": "admin", "password": "new-test-password-456"})
+	if login.Code != 200 {
+		t.Fatalf("new password login: %d %s", login.Code, login.Body.String())
+	}
 }

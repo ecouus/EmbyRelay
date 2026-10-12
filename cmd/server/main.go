@@ -63,6 +63,8 @@ func run() error {
 	if e != nil {
 		return e
 	}
+	app.StartDiagnostics()
+	defer app.StopDiagnostics()
 	addr := os.Getenv("RELAY_LISTEN")
 	if addr == "" {
 		addr = "127.0.0.1:6689"
@@ -71,8 +73,11 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go app.Maintenance(ctx)
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
+		app.CloseHijacked()
 		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if srv.Shutdown(shutdown) != nil {
@@ -86,6 +91,7 @@ func run() error {
 		e = srv.ListenAndServe()
 	}
 	if e == http.ErrServerClosed {
+		<-shutdownDone
 		return nil
 	}
 	return e

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/subtle"
+	"database/sql"
 	"embyrelay/internal/proxy"
 	"errors"
 	"io"
@@ -79,16 +80,15 @@ func (a *App) play(w http.ResponseWriter, r *http.Request) {
 	a.requests.Add(1)
 	defer a.active.Add(-1)
 	if rr.route.DailyQuota > 0 {
-		traffic, e := a.Store.Traffic()
-		if e != nil {
+		var used int64
+		e := a.Store.DB.QueryRow("SELECT egress_bytes FROM traffic_daily WHERE date=? AND route_id=?", time.Now().UTC().Format("2006-01-02"), rr.route.ID).Scan(&used)
+		if e != nil && !errors.Is(e, sql.ErrNoRows) {
 			apiError(w, 503, "accounting unavailable")
 			return
 		}
-		for _, t := range traffic {
-			if t.RouteID == rr.route.ID && t.Date == time.Now().UTC().Format("2006-01-02") && t.Egress >= rr.route.DailyQuota {
-				apiError(w, 429, "daily quota exhausted")
-				return
-			}
+		if used >= rr.route.DailyQuota {
+			apiError(w, 429, "daily quota exhausted")
+			return
 		}
 	}
 	session := ID()
@@ -100,11 +100,19 @@ func (a *App) play(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	mw := &meterWriter{ResponseWriter: w, app: a, route: rr.route, usage: rr.usage, ctx: ctx, session: session, status: "completed"}
+	if accessKey.AccountID == "" && r.Method == http.MethodGet {
+		path := strings.ToLower(r.URL.Path)
+		mw.stream = (strings.Contains(path, "/videos/") || strings.Contains(path, "/audio/")) && strings.Contains(path, "/stream")
+	}
 	completed := false
 	defer func() {
 		mw.flushIngress()
+		mw.finishRouteCredit()
 		mw.mu.Lock()
 		defer mw.mu.Unlock()
+		if mw.connection != nil {
+			a.untrackHijacked(mw.connection)
+		}
 		status := mw.status
 		if !completed {
 			status = "interrupted"
@@ -165,6 +173,7 @@ type meterWriter struct {
 	accessCharge   func(int) error
 	accessRefund   int64
 	accessCredit   int64
+	routeCredit    int64
 	stream         bool
 	connection     net.Conn
 	mu             sync.Mutex
@@ -226,24 +235,71 @@ func (w *meterWriter) reserveRoute(n int) error {
 	if e := w.wait(n); e != nil {
 		return e
 	}
+	return w.chargeRoute(int64(n))
+}
+func (w *meterWriter) chargeRoute(n int64) error {
 	w.mu.Lock()
 	ingress := w.pendingIngress
 	w.pendingIngress = 0
 	w.mu.Unlock()
-	e := w.app.Store.Charge(w.route.ID, w.route.DailyQuota, ingress, int64(n))
+	e := w.app.Store.Charge(w.route.ID, w.route.DailyQuota, ingress, n)
 	if errors.Is(e, ErrQuota) && w.app.AcquireQuota != nil && w.route.DailyQuota > 0 {
-		if e = w.app.AcquireQuota(w.ctx, w.route, int64(n)); e == nil {
-			e = w.app.Store.Charge(w.route.ID, w.route.DailyQuota, ingress, int64(n))
+		if e = w.app.AcquireQuota(w.ctx, w.route, n); e == nil {
+			e = w.app.Store.Charge(w.route.ID, w.route.DailyQuota, ingress, n)
 		}
 	}
 	if e != nil {
 		w.mu.Lock()
 		w.pendingIngress += ingress
 		w.mu.Unlock()
-		w.setStatus("quota_or_accounting_error")
 		return e
 	}
 	return nil
+}
+
+func (w *meterWriter) routeAllowance(n int) (int, error) {
+	if e := w.wait(n); e != nil {
+		return 0, e
+	}
+	if w.routeCredit == 0 {
+		grant := int64(10 << 20)
+		if w.route.DailyQuota > 0 && grant > w.route.DailyQuota {
+			grant = w.route.DailyQuota
+		}
+		if w.app.Store.AgentID != "" && w.route.DailyQuota > 0 {
+			available, used, err := w.app.Store.AgentBudget(w.route.ID, time.Now().UTC().Format("2006-01-02"))
+			if err != nil {
+				return 0, err
+			}
+			if available > used && grant > available-used {
+				grant = available - used
+			}
+		}
+		if grant < 1 {
+			return 0, ErrQuota
+		}
+		for {
+			err := w.chargeRoute(grant)
+			if err == nil {
+				w.routeCredit = grant
+				break
+			}
+			if !errors.Is(err, ErrQuota) || grant == 1 {
+				return 0, err
+			}
+			grant /= 2
+		}
+	}
+	return min(n, int(w.routeCredit)), nil
+}
+func (w *meterWriter) finishRouteCredit() {
+	w.mu.Lock()
+	unused := w.routeCredit
+	w.routeCredit = 0
+	w.mu.Unlock()
+	if unused > 0 {
+		_ = w.app.Store.Charge(w.route.ID, 0, 0, -unused)
+	}
 }
 
 // Keep one centrally authorized video chunk across the smaller writes produced
@@ -295,8 +351,13 @@ func (w *meterWriter) record(n, reserved int, credit bool) {
 	if credit {
 		w.accessCredit -= int64(n)
 	}
+	if w.stream {
+		w.routeCredit -= int64(n)
+	}
 	if n < reserved {
-		w.app.Store.Charge(w.route.ID, 0, 0, int64(n-reserved))
+		if !w.stream {
+			w.app.Store.Charge(w.route.ID, 0, 0, int64(n-reserved))
+		}
 		if w.accessCharge != nil && !credit {
 			w.accessRefund += int64(reserved - n)
 		}
@@ -327,8 +388,8 @@ func (w *meterWriter) Write(b []byte) (int, error) {
 			size = allowed
 		}
 		var e error
-		if usingCredit {
-			e = w.reserveRoute(size)
+		if w.stream {
+			size, e = w.routeAllowance(size)
 		} else {
 			e = w.reserve(size)
 		}
@@ -371,12 +432,18 @@ func (w *meterWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	w.mu.Lock()
 	w.connection = c
 	w.mu.Unlock()
+	w.app.trackHijacked(c)
 	return &meterConn{Conn: c, w: w}, b, nil
 }
 
 type meterConn struct {
 	net.Conn
 	w *meterWriter
+}
+
+func (c *meterConn) Close() error {
+	c.w.app.untrackHijacked(c.Conn)
+	return c.Conn.Close()
 }
 
 func (c *meterConn) Write(b []byte) (int, error) {

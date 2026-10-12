@@ -100,6 +100,28 @@ func subscriptionFixture(t *testing.T) (*App, *http.Cookie, AccessAccount, strin
 	return a, cookie, cs[0], "/r/sub/" + result["access_key"]
 }
 
+func TestDeleteSubscriptionAndUnusedPlan(t *testing.T) {
+	a, admin, account, prefix := subscriptionFixture(t)
+	blocked := call(t, a, admin, "DELETE", "/api/v1/access-plans/"+account.PlanID, nil)
+	if blocked.Code != 400 {
+		t.Fatalf("plan in use deletion status = %d", blocked.Code)
+	}
+	deleted := call(t, a, admin, "DELETE", "/api/v1/access-accounts/"+account.ID, nil)
+	if deleted.Code != 200 {
+		t.Fatalf("account deletion: %d %s", deleted.Code, deleted.Body.String())
+	}
+	if _, err := get[AccessAccount](a.Store, "access_account", account.ID); err == nil {
+		t.Fatal("deleted account remains")
+	}
+	if result := call(t, a, nil, "GET", prefix+"/System/Ping", nil); result.Code != 401 {
+		t.Fatalf("old key accepted: %d", result.Code)
+	}
+	deleted = call(t, a, admin, "DELETE", "/api/v1/access-plans/"+account.PlanID, nil)
+	if deleted.Code != 200 {
+		t.Fatalf("unused plan deletion: %d %s", deleted.Code, deleted.Body.String())
+	}
+}
+
 func TestSubscriptionPublicDiscoveryPreservesClientWithoutToken(t *testing.T) {
 	a, _, _, prefix := subscriptionFixture(t)
 	for _, path := range []string{"/emby/System/Info/Public", "/emby/Branding/Configuration", "/emby/System/Ping"} {

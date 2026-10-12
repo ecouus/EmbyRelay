@@ -17,8 +17,8 @@ Docker 仓库名称必须小写。支持 linux/amd64（常见 Debian/Ubuntu VPS�
 ## 发布版本
 
 ```sh
-git tag v1.0.5
-git push origin v1.0.5
+git tag v1.0.12
+git push origin v1.0.12
 ```
 
 ```mermaid
@@ -29,7 +29,7 @@ flowchart LR
     D --> E[服务器拉取并重建容器]
 ```
 
-正式标签 `v1.0.5` 对应 `1.0.5`、`1.0`、`latest`；预发布不更新 `latest`。手动运行工作流时选择版本标签。
+正式标签 `v1.0.12` 对应 `1.0.12`、`1.0`、`latest`；预发布不更新 `latest`。手动运行工作流时选择版本标签。
 
 ## Debian / Ubuntu 拉取部署
 
@@ -40,7 +40,7 @@ docker compose -f deploy/docker-compose.yml pull
 docker compose -f deploy/docker-compose.yml up -d --no-build
 ```
 
-本次发布版本为 `1.0.5`，同时更新 `latest`，目标架构为 AMD64/ARM64。HTTPS 和 Agent 使用同一镜像，参照 deployment.md 的配置文件。
+本次发布版本为 `1.0.12`，同时更新 `latest`，目标架构为 AMD64/ARM64。HTTPS 和 Agent 使用同一镜像，参照 deployment.md 的配置文件。
 
 ## 本机手动推送（可选）
 
@@ -48,10 +48,25 @@ docker compose -f deploy/docker-compose.yml up -d --no-build
 # 已登录 Docker Hub 时无需重复 docker login
 docker buildx build --platform linux/amd64,linux/arm64 \
   -f deploy/Dockerfile \
-  -t ecouus/embyrelay:1.0.5 -t ecouus/embyrelay:1.0 -t ecouus/embyrelay:latest --push .
+  -t ecouus/embyrelay:1.0.12 -t ecouus/embyrelay:1.0 -t ecouus/embyrelay:latest --push .
 ```
 
 源代码仓库不包含数据库、master.key、Agent 身份、.env、node_modules、本机构建二进制或临时验收截图（README 展示图片保存在 docs/ 并随仓库提交）。前端 dist 在 CI/Docker 构建时生成。
+
+## 1.0.12 变更
+
+- 等待优雅关闭完成后退出并关闭 WebSocket；登录失败限速按可信代理识别的 IP、用户名和入口分别计数，IPv6 正常识别。
+- 诊断记录使用有界队列批量写入，401/404 抽样，清理放入维护任务；配置版本不变时 Agent 不再重建转发器，心跳不覆盖节点停用状态。
+- 普通视频使用 10 MiB 计量预扣并退还未发送额度；复用媒体转发器，订阅静态视频支持续传，上游响应头超时调整为 45 秒。
+- Agent 配额申请按路由加锁、增加申请量与控制端连接复用；保留 1.0.11 的 Agent 出站退款修正。
+- 支持删除账号和未使用套餐、批量账号操作、账号分页搜索与套餐应用；operator 可管理自身密码和两步验证，验证码不可重放。
+- 数据库迁移 v11/v12 增加索引与用户名唯一约束、TOTP 重放保护、旧周期留存和实际预扣周期退款；移除废弃 relay_reports，离线复制保留新增字段。
+- 合并侧边菜单、移除重复页面标题、调整留白；统一前端请求错误处理，隐藏标签页暂停轮询，按当前页刷新并恢复导航位置。
+- 安装器支持镜像覆盖、升级失败恢复镜像及备份、自动备份保留 5 份；健康检查适配监听端口，CI 增加镜像启动验证。
+
+升级前备份数据库和主密钥；先升级控制端，再升级 Agent。升级后的数据库不能直接由旧程序打开，回退需恢复配套备份。新用户名唯一索引要求先解决已有大小写重复的账号名称。周期留存规则见 [数据库文档](databases.md#订阅用量留存与清理)。
+
+本版不包含前端按页面拆分、Agent 后台提前续租和完整容量压测。
 
 ## 1.0.5 变更
 

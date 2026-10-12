@@ -3,6 +3,7 @@ package control
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -12,6 +13,39 @@ func (a *App) accessAdmin(w http.ResponseWriter, r *http.Request, user User, res
 		return
 	}
 	if resource == "access-plans" {
+		if r.Method == "POST" && id != "" && len(parts) == 3 && parts[2] == "apply" {
+			a.mutate(w, func() error {
+				a.accessMu.Lock()
+				defer a.accessMu.Unlock()
+				plan, err := get[AccessPlan](a.Store, "access_plan", id)
+				if err != nil {
+					return fmt.Errorf("plan not found")
+				}
+				accounts, err := list[AccessAccount](a.Store, "access_account")
+				if err != nil {
+					return err
+				}
+				tx, err := a.Store.DB.Begin()
+				if err != nil {
+					return err
+				}
+				defer tx.Rollback()
+				for _, account := range accounts {
+					if account.PlanID != id {
+						continue
+					}
+					account.Plan = plan
+					if _, err = tx.Exec("UPDATE objects SET payload=?,updated_at=? WHERE kind='access_account' AND id=?", string(Encode(account)), time.Now().Unix(), account.ID); err != nil {
+						return err
+					}
+				}
+				if _, err = tx.Exec("INSERT INTO audit_logs(actor_id,action,target,created_at) VALUES(?,?,?,?)", user.ID, "apply_access_plan", id, time.Now().Unix()); err != nil {
+					return err
+				}
+				return tx.Commit()
+			})
+			return
+		}
 		if r.Method == "GET" {
 			v, e := list[AccessPlan](a.Store, "access_plan")
 			if e != nil {
@@ -19,6 +53,19 @@ func (a *App) accessAdmin(w http.ResponseWriter, r *http.Request, user User, res
 				return
 			}
 			writeJSON(w, 200, v)
+			return
+		}
+		if r.Method == "DELETE" && id != "" {
+			a.mutate(w, func() error {
+				var count int
+				if err := a.Store.DB.QueryRow("SELECT COUNT(*) FROM objects WHERE kind='access_account' AND json_extract(payload,'$.plan_id')=?", id).Scan(&count); err != nil {
+					return err
+				}
+				if count > 0 {
+					return fmt.Errorf("套餐仍有已开通账号，无法删除")
+				}
+				return a.Store.remove("access_plan", id, user.ID)
+			})
 			return
 		}
 		if r.Method != "POST" && r.Method != "PATCH" {
@@ -43,6 +90,41 @@ func (a *App) accessAdmin(w http.ResponseWriter, r *http.Request, user User, res
 		a.mutate(w, func() error { return a.Store.put("access_plan", id, p, user.ID) })
 		return
 	}
+	if resource == "access-accounts" && r.Method == "DELETE" && id != "" && len(parts) == 2 {
+		a.mutate(w, func() error {
+			a.accessMu.Lock()
+			defer a.accessMu.Unlock()
+			tx, err := a.Store.DB.Begin()
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback()
+			if _, err = loadAccount(tx, id); err != nil {
+				return fmt.Errorf("账号不存在")
+			}
+			for _, table := range []string{"portal_sessions", "access_tokens", "access_leases", "access_targets", "access_usage", "access_rate", "access_devices"} {
+				if _, err = tx.Exec("DELETE FROM "+table+" WHERE account_id=?", id); err != nil {
+					return err
+				}
+			}
+			for _, kind := range []string{"key", "route", "upstream"} {
+				if _, err = tx.Exec("DELETE FROM objects WHERE kind=? AND json_extract(payload,'$.owner_account_id')=?", kind, id); err != nil {
+					return err
+				}
+			}
+			if _, err = tx.Exec("DELETE FROM objects WHERE kind='key' AND json_extract(payload,'$.account_id')=?", id); err != nil {
+				return err
+			}
+			if _, err = tx.Exec("DELETE FROM objects WHERE kind='access_account' AND id=?", id); err != nil {
+				return err
+			}
+			if _, err = tx.Exec("INSERT INTO audit_logs(actor_id,action,target,created_at) VALUES(?,?,?,?)", user.ID, "subscription_delete", id, time.Now().Unix()); err != nil {
+				return err
+			}
+			return tx.Commit()
+		})
+		return
+	}
 	if len(parts) == 3 && parts[2] == "sessions" && r.Method == "GET" {
 		a.queryRows(w, "SELECT hash,key_id,device,client_ip,user_agent,created_at,expires_at FROM access_tokens WHERE account_id=? ORDER BY created_at DESC LIMIT 100", id)
 		return
@@ -54,12 +136,40 @@ func (a *App) accessAdmin(w http.ResponseWriter, r *http.Request, user User, res
 			return
 		}
 		out := []map[string]any{}
+		usedByAccount := map[string]int64{}
+		for start := 0; start < len(cs); start += 100 {
+			end := min(start+100, len(cs))
+			conditions := make([]string, 0, end-start)
+			args := make([]any, 0, (end-start)*2)
+			for _, c := range cs[start:end] {
+				cycle, _ := accountCycle(c, time.Now())
+				conditions = append(conditions, "(account_id=? AND cycle=?)")
+				args = append(args, c.ID, cycle)
+			}
+			rows, err := a.Store.DB.Query("SELECT account_id,bytes FROM access_usage WHERE "+strings.Join(conditions, " OR "), args...)
+			if err != nil {
+				apiError(w, 500, "storage unavailable")
+				return
+			}
+			for rows.Next() {
+				var accountID string
+				var used int64
+				if err = rows.Scan(&accountID, &used); err != nil {
+					break
+				}
+				usedByAccount[accountID] = used
+			}
+			rows.Close()
+			if err != nil {
+				apiError(w, 500, "storage unavailable")
+				return
+			}
+		}
 		for _, c := range cs {
 			c.PasswordHash = ""
 			c.Credentials = ""
-			cycle, next := accountCycle(c, time.Now())
-			var used int64
-			a.Store.DB.QueryRow("SELECT bytes FROM access_usage WHERE account_id=? AND cycle=?", c.ID, cycle).Scan(&used)
+			_, next := accountCycle(c, time.Now())
+			used := usedByAccount[c.ID]
 			remaining := int64(-1)
 			if c.ExpiresAt > 0 {
 				remaining = max(int64(0), (c.ExpiresAt-time.Now().Unix()+86399)/86400)

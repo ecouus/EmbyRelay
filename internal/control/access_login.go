@@ -16,14 +16,16 @@ import (
 )
 
 func (a *App) accessLogin(ctx context.Context, c AccessAccount, in AccessCommand) (AccessResult, error) {
-	if !a.limiter.allow(in.ClientIP + ":0") {
+	if !a.limiter.allow("subscription", in.ClientIP, in.Username) {
 		return denied("登录尝试过多，请稍后重试")
 	}
 	hash := c.PasswordHash
-	if in.Username != c.Username {
+	if !strings.EqualFold(in.Username, c.Username) {
 		hash = a.dummyHash
 	}
-	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(in.Password)) != nil || in.Username != c.Username {
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(in.Password)) != nil || !strings.EqualFold(in.Username, c.Username) {
+		a.limiter.fail("subscription", in.ClientIP, in.Username)
+		a.Store.Audit("anonymous", "subscription_login_failed", loginAuditTarget(in.Username, in.ClientIP))
 		return denied("用户名或密码错误")
 	}
 	if err := accountActive(c, time.Now()); err != nil {
