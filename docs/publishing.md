@@ -17,8 +17,8 @@ Docker 仓库名称必须小写。支持 linux/amd64（常见 Debian/Ubuntu VPS�
 ## 发布版本
 
 ```sh
-git tag v1.0.21
-git push origin v1.0.21
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 ```mermaid
@@ -29,7 +29,7 @@ flowchart LR
     D --> E[服务器拉取并重建容器]
 ```
 
-正式标签 `v1.0.21` 对应 `1.0.21`、`1.0`、`latest`；预发布不更新 `latest`。手动运行工作流时选择版本标签。
+正式标签 `v1.0.0` 对应 `1.0.0`、`1.0`、`latest`；预发布不更新 `latest`。手动运行工作流时选择版本标签。
 
 ## Debian / Ubuntu 拉取部署
 
@@ -40,7 +40,7 @@ docker compose -f deploy/docker-compose.yml pull
 docker compose -f deploy/docker-compose.yml up -d --no-build
 ```
 
-本次发布版本为 `1.0.21`，同时更新 `latest`，目标架构为 AMD64/ARM64。HTTPS 和 Agent 使用同一镜像，参照 deployment.md 的配置文件。
+本次发布版本为 `1.0.0`，同时更新 `latest`，目标架构为 AMD64/ARM64。HTTPS 和 Agent 使用同一镜像，参照 deployment.md 的配置文件。
 
 ## 本机手动推送（可选）
 
@@ -48,12 +48,12 @@ docker compose -f deploy/docker-compose.yml up -d --no-build
 # 已登录 Docker Hub 时无需重复 docker login
 docker buildx build --platform linux/amd64,linux/arm64 \
   -f deploy/Dockerfile \
-  -t ecouus/embyrelay:1.0.21 -t ecouus/embyrelay:latest --push .
+  -t ecouus/embyrelay:1.0.0 -t ecouus/embyrelay:1.0 -t ecouus/embyrelay:latest --push .
 ```
 
 源代码仓库不包含数据库、master.key、Agent 身份、.env、node_modules、本机构建二进制或临时验收截图（README 展示图片保存在 docs/ 并随仓库提交）。前端 dist 在 CI/Docker 构建时生成。
 
-## 1.0.21 变更
+## 1.0.0 变更
 
 - 控制端支持 SQLite 和 PostgreSQL，一键安装可选择独立 PostgreSQL 容器；已有安装保持原数据库类型。
 - 新增数据库适配和 PostgreSQL 迁移，提供备份恢复、SQLite → PostgreSQL 一键切换及迁移中断重试。
@@ -63,7 +63,7 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 
 新版本仍支持单个控制端实例。使用 PostgreSQL 的维护与迁移步骤参见 [数据库部署文档](databases.md)。
 
-## 1.0.20 变更
+### 设备身份管理功能
 
 - 新增设备身份管理：管理员可配置源站默认和账号覆盖、身份组及设备例外；用户可查看自己的设备记录。
 - 播放器登录时固定设备身份，后续播放与进度请求沿用同一身份；策略更改对新登录生效。
