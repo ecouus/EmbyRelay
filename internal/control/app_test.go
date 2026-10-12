@@ -54,8 +54,13 @@ func TestStreamMeterUsesLargerSubscriptionCharges(t *testing.T) {
 		usage: &routeRuntime{}, ctx: context.Background(), stream: true,
 		accessCharge: func(n int) error { charges = append(charges, n); return nil },
 	}
-	if n, err := w.Write(bytes.Repeat([]byte("x"), 512*1024)); err != nil || n != 512*1024 {
-		t.Fatalf("wrote %d: %v", n, err)
+	for i := 0; i < 16; i++ {
+		if n, err := w.Write(bytes.Repeat([]byte("x"), 32*1024)); err != nil || n != 32*1024 {
+			t.Fatalf("wrote %d: %v", n, err)
+		}
+		if i == 0 && w.accessCredit != 224*1024 {
+			t.Fatalf("unused credit = %d", w.accessCredit)
+		}
 	}
 	if len(charges) != 2 || charges[0] != 256*1024 || charges[1] != 256*1024 {
 		t.Fatalf("charges = %v", charges)
@@ -80,7 +85,7 @@ func TestStreamMeterShrinksChargeNearQuota(t *testing.T) {
 	if n, err := w.Write(bytes.Repeat([]byte("x"), 128*1024)); err != nil || n != 128*1024 {
 		t.Fatalf("wrote %d: %v", n, err)
 	}
-	if len(charges) != 3 || charges[0] != 128*1024 || charges[1] != 64*1024 || charges[2] != 64*1024 {
+	if len(charges) != 6 || charges[0] != 256*1024 || charges[1] != 128*1024 || charges[2] != 64*1024 || charges[3] != 256*1024 || charges[4] != 128*1024 || charges[5] != 64*1024 {
 		t.Fatalf("charges = %v", charges)
 	}
 }

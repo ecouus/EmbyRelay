@@ -164,6 +164,7 @@ type meterWriter struct {
 	responseStatus int
 	accessCharge   func(int) error
 	accessRefund   int64
+	accessCredit   int64
 	stream         bool
 	connection     net.Conn
 	mu             sync.Mutex
@@ -219,6 +220,9 @@ func (w *meterWriter) reserve(n int) error {
 			return err
 		}
 	}
+	return w.reserveRoute(n)
+}
+func (w *meterWriter) reserveRoute(n int) error {
 	if e := w.wait(n); e != nil {
 		return e
 	}
@@ -242,6 +246,32 @@ func (w *meterWriter) reserve(n int) error {
 	return nil
 }
 
+// Keep one centrally authorized video chunk across the smaller writes produced
+// by the upstream body reader. Without this credit, each read incurs an RPC.
+func (w *meterWriter) accessAllowance(n int) (int, error) {
+	w.mu.Lock()
+	credit := w.accessCredit
+	w.mu.Unlock()
+	if credit == 0 {
+		grant := 256 * 1024
+		for {
+			err := w.accessCharge(grant)
+			if err == nil {
+				w.mu.Lock()
+				w.accessCredit += int64(grant)
+				w.mu.Unlock()
+				credit = int64(grant)
+				break
+			}
+			if grant == 1 || err.Error() != "本周期剩余流量不足" {
+				return 0, err
+			}
+			grant /= 2
+		}
+	}
+	return min(n, int(credit)), nil
+}
+
 // Merge ingress accounting with the next egress reservation instead of
 // opening a second transaction on every upstream body read.
 func (w *meterWriter) addIngress(n int) {
@@ -258,13 +288,16 @@ func (w *meterWriter) flushIngress() {
 		w.setStatus("quota_or_accounting_error")
 	}
 }
-func (w *meterWriter) record(n, reserved int) {
+func (w *meterWriter) record(n, reserved int, credit bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.bytes += int64(n)
+	if credit {
+		w.accessCredit -= int64(n)
+	}
 	if n < reserved {
 		w.app.Store.Charge(w.route.ID, 0, 0, int64(n-reserved))
-		if w.accessCharge != nil {
+		if w.accessCharge != nil && !credit {
 			w.accessRefund += int64(reserved - n)
 		}
 	}
@@ -284,21 +317,29 @@ func (w *meterWriter) Write(b []byte) (int, error) {
 		if size > chunk {
 			size = chunk
 		}
-		for {
-			if e := w.reserve(size); e != nil {
-				if w.stream && size > 1 && e.Error() == "本周期剩余流量不足" {
-					size /= 2
-					continue
-				}
+		usingCredit := w.stream && w.accessCharge != nil
+		if usingCredit {
+			allowed, e := w.accessAllowance(size)
+			if e != nil {
 				w.setStatus("subscription_denied")
 				panic(http.ErrAbortHandler)
 			}
-			break
+			size = allowed
+		}
+		var e error
+		if usingCredit {
+			e = w.reserveRoute(size)
+		} else {
+			e = w.reserve(size)
+		}
+		if e != nil {
+			w.setStatus("subscription_denied")
+			panic(http.ErrAbortHandler)
 		}
 		http.NewResponseController(w.ResponseWriter).SetWriteDeadline(time.Now().Add(30 * time.Second))
 		n, e := w.ResponseWriter.Write(b[:size])
 		http.NewResponseController(w.ResponseWriter).SetWriteDeadline(time.Time{})
-		w.record(n, size)
+		w.record(n, size, usingCredit)
 		total += n
 		if e != nil {
 			return total, e
@@ -346,7 +387,7 @@ func (c *meterConn) Write(b []byte) (int, error) {
 	}
 	c.Conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 	n, e := c.Conn.Write(b)
-	c.w.record(n, len(b))
+	c.w.record(n, len(b), false)
 	return n, e
 }
 

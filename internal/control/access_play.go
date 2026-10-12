@@ -215,7 +215,7 @@ func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeR
 		finish.Action = "finish"
 		mw.mu.Lock()
 		finish.Status = mw.responseStatus
-		finish.RefundBytes = mw.accessRefund
+		finish.RefundBytes = mw.accessRefund + mw.accessCredit
 		if finish.Status == 0 {
 			finish.Status = 200
 		}
