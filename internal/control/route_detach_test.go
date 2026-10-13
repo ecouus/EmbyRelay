@@ -61,11 +61,17 @@ func TestDeletedRouteDetachesAccountAndPreservesUsage(t *testing.T) {
 	if err = s.put("access_account", valid.ID, valid, "admin"); err != nil {
 		t.Fatal(err)
 	}
-	// Recreate a legacy dangling assignment and rerun only the new migration.
+	// Recreate schema 12 with a legacy dangling assignment.
+	if _, err = s.DB.Exec("DROP TABLE stream_reservations"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.DB.Exec("ALTER TABLE access_leases DROP COLUMN paced"); err != nil {
+		t.Fatal(err)
+	}
 	if err = s.put("access_account", c.ID, c, "admin"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.DB.Exec("DELETE FROM schema_migrations WHERE version=13"); err != nil {
+	if _, err = s.DB.Exec("DELETE FROM schema_migrations WHERE version>=13"); err != nil {
 		t.Fatal(err)
 	}
 	if err = apply(s.DB.DB); err != nil {

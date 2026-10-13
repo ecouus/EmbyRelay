@@ -170,6 +170,8 @@ func (a *App) play(w http.ResponseWriter, r *http.Request) {
 
 type meterWriter struct {
 	responseStatus  int
+	accessRate      int64
+	accessPace      func(int) error
 	accessCharge    func(int) error
 	accessRefund    int64
 	accessCredit    int64
@@ -237,6 +239,15 @@ func (w *meterWriter) reserve(n int) error {
 			w.mu.Unlock()
 		}
 		return err
+	}
+	if w.accessPace != nil {
+		if err := w.accessPace(n); err != nil {
+			w.app.Store.Charge(w.route.ID, 0, 0, -int64(n))
+			w.mu.Lock()
+			w.accessRefund += int64(n)
+			w.mu.Unlock()
+			return err
+		}
 	}
 	return nil
 }
@@ -374,7 +385,6 @@ func (w *meterWriter) record(n, reserved int, credit bool) {
 	}
 	if w.stream {
 		w.routeCredit -= int64(n)
-		w.app.Store.consumeStreamTraffic(w.route.ID, w.routeCreditDate, int64(n))
 	}
 	if n < reserved {
 		if !w.stream {
@@ -396,6 +406,9 @@ func (w *meterWriter) Write(b []byte) (int, error) {
 		chunk := 32 * 1024
 		if w.stream {
 			chunk = 256 * 1024
+		}
+		if w.accessRate > 0 {
+			chunk = min(chunk, accessPaceChunk(w.accessRate))
 		}
 		if size > chunk {
 			size = chunk
@@ -419,11 +432,23 @@ func (w *meterWriter) Write(b []byte) (int, error) {
 			w.setStatus("subscription_denied")
 			panic(http.ErrAbortHandler)
 		}
+		if w.stream && w.accessPace != nil {
+			if err := w.accessPace(size); err != nil {
+				w.setStatus("subscription_denied")
+				return total, err
+			}
+		}
 		http.NewResponseController(w.ResponseWriter).SetWriteDeadline(time.Now().Add(30 * time.Second))
 		n, e := w.ResponseWriter.Write(b[:size])
 		http.NewResponseController(w.ResponseWriter).SetWriteDeadline(time.Time{})
 		w.record(n, size, usingCredit)
 		total += n
+		if w.stream && n > 0 {
+			if err := w.app.Store.consumeStreamTraffic(w.route.ID, w.routeCreditDate, int64(n)); err != nil {
+				w.setStatus("quota_or_accounting_error")
+				return total, err
+			}
+		}
 		if e != nil {
 			return total, e
 		}
@@ -469,15 +494,31 @@ func (c *meterConn) Close() error {
 }
 
 func (c *meterConn) Write(b []byte) (int, error) {
-	if e := c.w.reserve(len(b)); e != nil {
-		c.w.setStatus("subscription_denied")
-		c.Close()
-		return 0, e
+	total := 0
+	for len(b) > 0 {
+		size := min(len(b), 32<<10)
+		if c.w.accessRate > 0 {
+			size = min(size, accessPaceChunk(c.w.accessRate))
+		}
+		if err := c.w.reserve(size); err != nil {
+			c.w.setStatus("subscription_denied")
+			c.Close()
+			return total, err
+		}
+		c.Conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		n, err := c.Conn.Write(b[:size])
+		c.Conn.SetWriteDeadline(time.Time{})
+		c.w.record(n, size, false)
+		total += n
+		if err != nil {
+			return total, err
+		}
+		if n != size {
+			return total, io.ErrShortWrite
+		}
+		b = b[size:]
 	}
-	c.Conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-	n, e := c.Conn.Write(b)
-	c.w.record(n, len(b), false)
-	return n, e
+	return total, nil
 }
 
 func (w *meterWriter) setStatus(s string) { w.mu.Lock(); defer w.mu.Unlock(); w.status = s }

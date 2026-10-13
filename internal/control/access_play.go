@@ -194,6 +194,7 @@ func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeR
 		return q, nil, done, true
 	}
 	command.Action = "begin"
+	command.Paced = true
 	command.Stream = mediaRequest(q)
 	mw.stream = command.Stream
 	out, err := a.accessCall(q.Context(), command)
@@ -205,6 +206,7 @@ func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeR
 	if d, ok := q.Context().Value(detailKey{}).(*diagnosticDetail); ok {
 		d.DeviceIdentity = out.DeviceIdentity
 	}
+	mw.accessRate = out.RateBPS
 	command.Lease = out.Lease
 	requestContext := q.Context()
 	stop := make(chan struct{})
@@ -243,6 +245,30 @@ func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeR
 			}
 		}
 	}()
+	mw.accessPace = func(n int) error {
+		if mw.accessRate <= 0 {
+			return nil
+		}
+		pace := command
+		pace.Action = "pace"
+		pace.Bytes = int64(n)
+		for {
+			result, err := a.accessCall(requestContext, pace)
+			if err != nil {
+				return err
+			}
+			if result.WaitNS <= 0 {
+				return nil
+			}
+			timer := time.NewTimer(time.Duration(result.WaitNS))
+			select {
+			case <-requestContext.Done():
+				timer.Stop()
+				return requestContext.Err()
+			case <-timer.C:
+			}
+		}
+	}
 	mw.accessCharge = func(n int) error {
 		charge := command
 		charge.Action = "charge"

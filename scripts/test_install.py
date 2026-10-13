@@ -249,6 +249,61 @@ class MainInstallerTests(unittest.TestCase):
             self.assertEqual(len(list(folder.glob('auto-*.tar.gz'))), 5)
             self.assertTrue((folder / 'manual.tar.gz').exists())
 
+    def test_upgrade_uses_running_image_and_rolls_back_health_failure(self):
+        config = self.config()
+        directory = Path('/unused')
+        with patch.object(installer, 'service_image', return_value='sha256:running-old'), \
+             patch.object(installer, 'service_version', return_value='1.0.18'), \
+             patch.object(installer, 'backup', return_value=Path('/saved.tar.gz')), \
+             patch.object(installer, 'setup_nginx'), patch.object(installer, 'run'), \
+             patch.object(installer, 'start', side_effect=ValueError('new image unhealthy')), \
+             patch.object(installer, 'restore') as restore, self.assertRaisesRegex(ValueError, 'unhealthy'):
+            installer.upgrade(['compose'], directory, directory / 'docker-compose.yml', config)
+        restore.assert_called_once_with(['compose'], directory, config, Path('/saved.tar.gz'),
+                                        automatic=True, image='sha256:running-old', version='1.0.18')
+
+    def test_service_image_reads_container_instead_of_mutable_tag(self):
+        with patch.object(installer.subprocess, 'check_output', side_effect=['container-id\n', 'sha256:actual\n']) as output:
+            self.assertEqual(installer.service_image(['compose']), 'sha256:actual')
+        self.assertEqual(output.call_args_list[1].args[0],
+                         ['docker', 'inspect', '--format', '{{.Image}}', 'container-id'])
+
+    def test_rollback_recreates_pinned_image_without_pull(self):
+        import tarfile
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            backup = directory / 'backup.tar.gz'
+            with tarfile.open(backup, 'w:gz') as archive:
+                for name in ['embyrelay.db', 'master.key']:
+                    data = b'old-data'
+                    member = tarfile.TarInfo(name)
+                    member.size = len(data)
+                    archive.addfile(member, io.BytesIO(data))
+            calls = []
+            def run(command, **kwargs):
+                calls.append(command)
+                override = Path(command[command.index('-f') + 1])
+                pinned = json.loads(override.read_text())['services']['embyrelay']
+                self.assertEqual(pinned, {'image': 'sha256:old', 'pull_policy': 'never'})
+            with patch.object(installer, 'run', side_effect=run), \
+                 patch.object(installer, 'healthy'), \
+                 patch.object(installer, 'service_image', return_value='sha256:old'), \
+                 patch.object(installer, 'service_version', return_value='1.0.18'):
+                installer.restore(['compose'], directory, self.config(), backup,
+                                  automatic=True, image='sha256:old', version='1.0.18')
+            self.assertEqual(calls[-1][-7:], ['up', '-d', '--no-deps', '--force-recreate', '--pull', 'never', 'embyrelay'])
+            self.assertFalse(any('start' in command for command in calls))
+
+    def test_https_upgrade_failure_also_rolls_back(self):
+        with patch.object(installer, 'service_image', return_value='sha256:old'), \
+             patch.object(installer, 'service_version', return_value='1.0.18'), \
+             patch.object(installer, 'backup', return_value=Path('/saved.tar.gz')), \
+             patch.object(installer, 'setup_nginx'), patch.object(installer, 'run'), \
+             patch.object(installer, 'start'), patch.object(installer, 'check_https', return_value=False), \
+             patch.object(installer, 'restore') as restore, self.assertRaisesRegex(ValueError, 'HTTPS'):
+            installer.upgrade(['compose'], Path('/unused'), Path('/unused/config'), self.config())
+        self.assertEqual(restore.call_args.kwargs['image'], 'sha256:old')
+
 
 if __name__ == '__main__':
     unittest.main()

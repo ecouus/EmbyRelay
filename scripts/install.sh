@@ -373,7 +373,7 @@ def validate_data_archive(path):
                 raise ValueError('备份含不安全路径或特殊文件，拒绝恢复')
 
 
-def restore(compose, directory, config, backup_file, automatic=False):
+def restore(compose, directory, config, backup_file, automatic=False, image=None, version=None):
     source = Path(backup_file).expanduser().resolve()
     if not source.is_file():
         raise ValueError('备份文件不存在')
@@ -403,6 +403,10 @@ def restore(compose, directory, config, backup_file, automatic=False):
             return
         if not automatic:
             backup(compose, directory, config)
+        if image:
+            override = temp / 'rollback-compose.json'
+            write_private(override, json.dumps({'services': {'embyrelay': {'image': image, 'pull_policy': 'never'}}}))
+            compose = compose + ['-f', str(override)]
         run(compose + ['stop', 'embyrelay'])
         try:
             if dump is not None:
@@ -417,9 +421,53 @@ def restore(compose, directory, config, backup_file, automatic=False):
         except BaseException:
             print('恢复未完成，应用保持停止。请使用恢复前备份处理后再启动。', file=sys.stderr)
             raise
-        run(compose + ['start', 'embyrelay'])
+        if image:
+            run(compose + ['up', '-d', '--no-deps', '--force-recreate', '--pull', 'never', 'embyrelay'])
+        else:
+            run(compose + ['start', 'embyrelay'])
         healthy(compose, database_type(config))
+        if image:
+            if service_image(compose) != image:
+                run(compose + ['stop', 'embyrelay'])
+                raise ValueError('回滚镜像校验失败；应用已停止')
+            if version is not None and service_version(compose) != version:
+                run(compose + ['stop', 'embyrelay'])
+                raise ValueError('回滚版本校验失败；应用已停止')
         print('数据库和主密钥已恢复。')
+
+
+def service_image(compose):
+    container = subprocess.check_output(compose + ['ps', '-a', '-q', 'embyrelay'], text=True).strip()
+    if not container or '\n' in container:
+        raise ValueError('无法确定升级前的唯一应用容器')
+    return subprocess.check_output(['docker', 'inspect', '--format', '{{.Image}}', container], text=True).strip()
+
+
+def service_version(compose):
+    health = subprocess.check_output(compose + ['exec', '-T', 'embyrelay', 'wget', '-q', '-O', '-',
+                                              'http://127.0.0.1:6689/healthz'], text=True)
+    version = json.loads(health).get('version')
+    if not isinstance(version, str) or not version:
+        raise ValueError('无法读取升级前应用版本')
+    return version
+
+
+def upgrade(compose, directory, path, config):
+    previous_image = service_image(compose)
+    previous_version = service_version(compose)
+    saved_backup = backup(compose, directory, config, automatic=True)
+    setup_nginx(compose, directory, path, config)
+    try:
+        run(compose + ['pull'])
+        start(compose, path, config)
+        if not check_https(config['x-embyrelay-installer']['domain']):
+            raise ValueError('升级后的 HTTPS 验证失败')
+    except BaseException:
+        print('升级失败，正在恢复升级前镜像和数据…', file=sys.stderr)
+        restore(compose, directory, config, saved_backup, automatic=True,
+                image=previous_image, version=previous_version)
+        raise
+    prune_automatic_backups(directory)
 
 
 def uninstall(compose, directory):
@@ -711,20 +759,7 @@ def main():
             check_https(config['x-embyrelay-installer']['domain'])
             print('管理员用户名：' + config['x-embyrelay-installer']['admin'] + '（密码为你输入的密码）')
         elif action == 'upgrade':
-            # Back up using the current image before pulling a newer image/migration.
-            previous_image = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}', IMAGE], text=True).strip()
-            saved_backup = backup(compose, directory, config, automatic=True)
-            setup_nginx(compose, directory, path, config)
-            try:
-                run(compose + ['pull'])
-                start(compose, path, config)
-            except BaseException:
-                print('升级失败，正在恢复升级前镜像和数据…', file=sys.stderr)
-                run(['docker', 'tag', previous_image, IMAGE])
-                restore(compose, directory, config, saved_backup, automatic=True)
-                raise
-            check_https(config['x-embyrelay-installer']['domain'])
-            prune_automatic_backups(directory)
+            upgrade(compose, directory, path, config)
         elif action == 'backup':
             backup(compose, directory, config)
         elif action == 'migrate-db':

@@ -15,6 +15,10 @@ import (
 	"time"
 )
 
+// PlaybackCSP makes upstream documents opaque and disables active content,
+// including HTML and SVG served from the same origin as the administration UI.
+const PlaybackCSP = "sandbox; default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+
 type Config struct {
 	AutoMediaRedirect bool
 	Upstream          *url.URL
@@ -66,6 +70,8 @@ func New(cfg Config) *Gateway {
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = traceRequest(r)
 	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Content-Security-Policy", PlaybackCSP)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if r.URL.Path == "/healthz" {
 		w.WriteHeader(200)
 		return
@@ -203,6 +209,8 @@ func (g *Gateway) stream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Content-Security-Policy", PlaybackCSP)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	reportStatus(r.Context(), resp.StatusCode)
 	w.WriteHeader(resp.StatusCode)
 	next := start

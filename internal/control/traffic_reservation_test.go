@@ -53,6 +53,9 @@ func TestStreamCreditRefundUsesReservationDay(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.pendingTraffic = map[string]int64{yesterday + "/route": 8 << 20}
+	if _, err = s.DB.Exec("INSERT INTO stream_reservations VALUES(?,?,?)", yesterday, "route", 8<<20); err != nil {
+		t.Fatal(err)
+	}
 	if err = s.refundStreamTraffic("route", yesterday, 8<<20); err != nil {
 		t.Fatal(err)
 	}
@@ -107,11 +110,24 @@ func TestActualHeartbeatReconcilesLegacyCountersOnlyOnce(t *testing.T) {
 }
 
 func TestStreamConsumptionDoesNotWaitForDatabaseLock(t *testing.T) {
-	s := &Store{pendingTraffic: map[string]int64{"day/route": 10 << 20}}
+	s, err := testStore(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	day, err := s.reserveStreamTraffic("route", 0, 0, 10<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
 	s.mu.Lock() // Simulate another stream blocked inside a billing transaction.
 	defer s.mu.Unlock()
 	done := make(chan struct{})
-	go func() { s.consumeStreamTraffic("route", "day", 256<<10); close(done) }()
+	go func() {
+		if err := s.consumeStreamTraffic("route", day, 256<<10); err != nil {
+			t.Error(err)
+		}
+		close(done)
+	}()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
@@ -119,7 +135,7 @@ func TestStreamConsumptionDoesNotWaitForDatabaseLock(t *testing.T) {
 	}
 	s.pendingMu.Lock()
 	defer s.pendingMu.Unlock()
-	if s.pendingTraffic["day/route"] != (10<<20)-(256<<10) {
+	if s.pendingTraffic[day+"/route"] != (10<<20)-(256<<10) {
 		t.Fatal("incorrect pending credit")
 	}
 }

@@ -237,6 +237,8 @@ func TestUsageRetentionSchemaUpgrade(t *testing.T) {
 	defer store.Close()
 	// Restore the shape of schema 11 inside this disposable test database.
 	for _, query := range []string{
+		"DROP TABLE stream_reservations",
+		"ALTER TABLE access_leases DROP COLUMN paced",
 		"DROP INDEX access_usage_retired",
 		"ALTER TABLE access_usage DROP COLUMN retired_at",
 		"ALTER TABLE access_leases DROP COLUMN charged_cycle",

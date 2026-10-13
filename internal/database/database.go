@@ -113,6 +113,8 @@ func (db *DB) SQL(query string) string {
 		"MAX(reported,?)", "GREATEST(reported,?)",
 		"MAX(0,ingress_bytes+?)", "GREATEST(0,ingress_bytes+?)",
 		"MAX(0,egress_bytes+?)", "GREATEST(0,egress_bytes+?)",
+		"MAX(0,egress_bytes-COALESCE(", "GREATEST(0,egress_bytes-COALESCE(",
+		"MAX(0,t.egress_bytes-COALESCE(", "GREATEST(0,t.egress_bytes-COALESCE(",
 	).Replace(query)
 	var out strings.Builder
 	index := 0

@@ -12,7 +12,7 @@ import (
 // is read in one snapshot and the target is committed atomically. Callers must
 // stop all control servers and Agents before switching the database afterward.
 func Copy(ctx context.Context, source, target *DB, migrationID string) (map[string]int64, error) {
-	tables := []string{"users", "login_sessions", "objects", "settings", "traffic_daily", "audit_logs", "stream_sessions", "quota_leases", "remote_sessions", "enroll_tokens", "nonces", "request_diagnostics", "access_usage", "access_tokens", "access_leases", "access_rate", "access_targets", "portal_sessions", "access_devices", "totp_replay"}
+	tables := []string{"users", "login_sessions", "objects", "settings", "traffic_daily", "audit_logs", "stream_sessions", "quota_leases", "remote_sessions", "enroll_tokens", "nonces", "request_diagnostics", "access_usage", "access_tokens", "access_leases", "access_rate", "access_targets", "portal_sessions", "access_devices", "totp_replay", "stream_reservations"}
 	options := &sql.TxOptions{ReadOnly: true}
 	if source.Driver == "postgres" {
 		options.Isolation = sql.LevelRepeatableRead

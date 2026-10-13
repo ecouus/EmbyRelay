@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"embyrelay/internal/control"
 	"encoding/base64"
 	"encoding/json"
@@ -51,6 +52,8 @@ type Agent struct {
 	URL        string
 	key        ed25519.PrivateKey
 	pub        ed25519.PublicKey
+	applied    bool
+	digest     [32]byte
 	version    int64
 	validUntil time.Time
 	OfflineTTL time.Duration
@@ -123,6 +126,8 @@ func New(app *control.App, store *control.Store, dir, endpoint, controlURL, name
 				if e = app.Apply(snap); e != nil {
 					return nil, e
 				}
+				a.applied = true
+				a.digest = snapshotDigest(snap)
 				a.version = snap.Version
 				a.validUntil = time.Unix(snap.GeneratedAt, 0).Add(a.OfflineTTL)
 			}
@@ -185,6 +190,13 @@ func (a *Agent) request(ctx context.Context, method, path string, input, output 
 	}
 	return nil
 }
+
+// Generation time changes on every poll and is not effective configuration.
+func snapshotDigest(s control.Snapshot) [32]byte {
+	s.GeneratedAt = 0
+	return sha256.Sum256(control.Encode(s))
+}
+
 func (a *Agent) Sync(ctx context.Context) error {
 	var signed control.SignedSnapshot
 	if e := a.request(ctx, "GET", "/api/v1/agent/config", nil, &signed); e != nil {
@@ -197,10 +209,12 @@ func (a *Agent) Sync(ctx context.Context) error {
 	if snap.Version < a.version || time.Since(time.Unix(snap.GeneratedAt, 0)) > 5*time.Minute || time.Unix(snap.GeneratedAt, 0).After(time.Now().Add(time.Minute)) {
 		return fmt.Errorf("stale configuration")
 	}
-	if a.version == 0 || snap.Version != a.version {
+	digest := snapshotDigest(snap)
+	if !a.applied || digest != a.digest {
 		if e = a.App.Apply(snap); e != nil {
 			return e
 		}
+		a.applied, a.digest = true, digest
 	}
 	if e = a.App.SaveSecret("agent_snapshot", string(control.Encode(signed))); e != nil {
 		return e
@@ -281,7 +295,9 @@ func (a *Agent) Run(ctx context.Context) {
 			}
 			slog.Warn("agent synchronization failed", "reason", e.Error())
 			if time.Now().After(a.validUntil) {
-				a.App.Apply(control.Snapshot{Version: a.version})
+				if err := a.App.Apply(control.Snapshot{Version: a.version}); err == nil {
+					a.applied = false
+				}
 			}
 		} else {
 			lastError = ""

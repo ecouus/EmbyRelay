@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { requestAPI, AUTH_EXPIRED_EVENT } from './api'
+import { requestAPI, AUTH_EXPIRED_EVENT, loginPath } from './api'
 
 import BrandLogo from './BrandLogo.vue'
 import UiIcon from './UiIcon.vue'
@@ -9,6 +9,8 @@ import UserPortal from './UserPortal.vue'
 import UserSources from './UserSources.vue'
 import ResponsiveTable from './ResponsiveTable.vue'
 const portalMode = ref(false)
+const loginIdentity = ref(new URLSearchParams(window.location.search).get('portal') === '1' ? 'subscriber' : 'auto')
+watch(loginIdentity, () => { resetLogin() })
 const mobileNav = ref(false)
 watch(portalMode, () => { mobileNav.value = false })
 import AccessSubscriptions from './AccessSubscriptions.vue'
@@ -80,7 +82,7 @@ async function refreshCurrent(){
  selected.forEach((name,index)=>{switch(name){case 'overview':overview.value=result[index];break;case 'upstreams':upstreams.value=result[index];break;case 'routes':routes.value=result[index];break;case 'relays':nodes.value=result[index];break;case 'sessions':sessions.value=result[index];break;case 'traffic':traffic.value=result[index];break;case 'audit':audit.value=result[index];break;case 'diagnostics':diagnostics.value=result[index]}})
  if(admin.value&&['audit','settings'].includes(page.value))users.value=await api('users')
 }
-async function login(){await run(async()=>{const result=await api('auth/login','POST',{username:username.value,password:password.value,code:totpRequired.value?code.value:''});if(result.totp_required){totpRequired.value=true;return};resetLogin();if(result.role==='subscriber'){portalMode.value=true;return};me.value=await api('auth/me');await refresh()})}
+async function login(){await run(async()=>{const result=await api(loginPath(loginIdentity.value),'POST',{username:username.value,password:password.value,code:totpRequired.value?code.value:''});if(result.totp_required){totpRequired.value=true;return};resetLogin();if(result.role==='subscriber'){portalMode.value=true;return};me.value=await api('auth/me');await refresh()})}
 function resetLogin(){username.value='';password.value='';code.value='';totpRequired.value=false;error.value='';notice.value=''}
 async function logout(){await run(async()=>{await api('auth/logout','POST');me.value=null;resetLogin();secret.value='';importInfo.value=null;keyRoute.value=null;enrollment.value=null})}
 function open(type:string,row?:any){kind.value=type;edit.value=type==='upstream'?{name:'',base_url:'',enabled:true,mode:'proxy',allowed_cidrs:[],redirect_hosts:[],...row}:type==='route'?{alias:'',upstream_id:upstreams.value[0]?.id,relay_id:'',enabled:true,rate_bps:0,daily_quota:0,max_concurrent:100,...row}:{username:'',password:'',role:'operator',...row};if(type==='upstream'){edit.value.emby_username='';edit.value.emby_password='';edit.value.clear_credentials=false;edit.value.cidrs=(edit.value.allowed_cidrs??[]).join(', ');edit.value.hosts=(edit.value.redirect_hosts??[]).join(', ')};modal.value=true}
@@ -146,7 +148,7 @@ function sessionExpired(event: Event) {
  upstreams.value=[];routes.value=[];nodes.value=[];users.value=[];sessions.value=[];traffic.value=[];audit.value=[];diagnostics.value=[];overview.value={}
  error.value='登录已过期，请重新登录'
 }
-onMounted(async()=>{window.addEventListener(AUTH_EXPIRED_EVENT,sessionExpired);try{me.value=await api('auth/me');await refresh()}catch(e){if(me.value)error.value=String(e);else{try{await api('portal/me');portalMode.value=true}catch{}}}finally{ready.value=true};timer=setInterval(()=>{if(me.value&&!busy.value&&!document.hidden)refreshCurrent().catch(e=>error.value=e.message)},15000)})
+onMounted(async()=>{window.addEventListener(AUTH_EXPIRED_EVENT,sessionExpired);try{if(loginIdentity.value==='subscriber'){try{await api('portal/me');portalMode.value=true}catch{};return};me.value=await api('auth/me');await refresh()}catch(e){if(me.value)error.value=String(e);else{try{await api('portal/me');portalMode.value=true}catch{}}}finally{ready.value=true};timer=setInterval(()=>{if(me.value&&!busy.value&&!document.hidden)refreshCurrent().catch(e=>error.value=e.message)},15000)})
 onUnmounted(()=>{clearInterval(timer);window.removeEventListener(AUTH_EXPIRED_EVENT,sessionExpired)})
 </script>
 
@@ -156,7 +158,7 @@ onUnmounted(()=>{clearInterval(timer);window.removeEventListener(AUTH_EXPIRED_EV
   <div v-else-if="!ready" class="loading"><n-spin /></div>
   <main v-else-if="!me" class="login-screen"><n-button class="login-theme" @click="dark=!dark" :aria-label="dark?'切换明亮模式':'切换暗色模式'">{{dark?'☀ 明亮':'☾ 暗色'}}</n-button>
     <div class="login-story"><div class="brand"><BrandLogo /> EmbyRelay</div><div><div class="eyebrow">YOUR MEDIA. YOUR NETWORK.</div><h1>每一段播放，<br>都有可靠的连接。</h1><p>管理 Emby 源站、连接中转节点，<br>让你的媒体服务始终井然有序。</p><div class="network-art"><i></i><span>EMBY</span><b>⟷</b><span class="art-center">RELAY</span><b>⟷</b><span>YOU</span></div></div><small>自托管 · 私有网络 · 安全传输</small></div>
-    <form class="login-form" @submit.prevent="login"><div class="eyebrow">WELCOME TO EMBYRELAY</div><h2>欢迎回来</h2><p>登录你的账号，自动进入对应的工作空间。</p><n-alert v-if="error" type="error" :show-icon="false">{{error}}</n-alert><n-alert v-if="notice" type="success" :show-icon="false">{{notice}}</n-alert><template v-if="!totpRequired"><label>用户名<n-input v-model:value="username" autocomplete="username" placeholder="输入用户名" /></label><label>密码<n-input v-model:value="password" type="password" show-password-on="click" autocomplete="current-password" placeholder="输入账户密码" /></label></template><label v-else>动态验证码 <small>账户已开启两步验证，请输入认证器中的验证码</small><n-input v-model:value="code" autocomplete="one-time-code" placeholder="6 位验证码" maxlength="6" /></label><n-button attr-type="submit" type="primary" size="large" block :loading="busy">{{totpRequired?'验证并登录 →':'登录 →'}}</n-button><n-button v-if="totpRequired" :disabled="busy" @click="resetLogin" block quaternary>返回账号密码登录</n-button><small class="login-foot">管理员管理服务，订阅用户查看额度与播放器配置。</small></form>
+    <form class="login-form" @submit.prevent="login"><div class="eyebrow">WELCOME TO EMBYRELAY</div><h2>欢迎回来</h2><p>选择登录身份，进入对应的工作空间。</p><n-alert v-if="error" type="error" :show-icon="false">{{error}}</n-alert><n-alert v-if="notice" type="success" :show-icon="false">{{notice}}</n-alert><template v-if="!totpRequired"><label>登录身份<n-select v-model:value="loginIdentity" :disabled="busy" :options="[{label:'自动识别 / 管理账号',value:'auto'},{label:'订阅用户中心',value:'subscriber'}]" /></label><label>用户名<n-input v-model:value="username" autocomplete="username" placeholder="输入用户名" /></label><label>密码<n-input v-model:value="password" type="password" show-password-on="click" autocomplete="current-password" placeholder="输入账户密码" /></label></template><label v-else>动态验证码 <small>账户已开启两步验证，请输入认证器中的验证码</small><n-input v-model:value="code" autocomplete="one-time-code" placeholder="6 位验证码" maxlength="6" /></label><n-button attr-type="submit" type="primary" size="large" block :loading="busy">{{totpRequired?'验证并登录 →':'登录 →'}}</n-button><n-button v-if="totpRequired" :disabled="busy" @click="resetLogin" block quaternary>返回账号密码登录</n-button><small class="login-foot">管理员管理服务，订阅用户查看额度与播放器配置。</small></form>
   </main>
   <div v-else class="shell">
     <aside class="sidebar"><div class="brand"><BrandLogo /> EmbyRelay</div><div class="nav-caption">工作空间</div><nav><button v-for="n in visibleNavGroups" :key="n.id" :class="{selected:currentGroup?.id===n.id}" @click="page=n.id;mobileNav=false" :aria-current="currentGroup?.id===n.id?'page':undefined"><UiIcon :name="n.id" />{{n.label}}<i v-if="currentGroup?.id===n.id">•</i></button></nav><div class="sidebar-bottom"><span class="status-dot"></span> 控制平面在线 <small>配置 v{{overview.version}}</small></div><div class="profile"><div class="avatar">{{me.username.slice(0,1).toUpperCase()}}</div><div class="profile-info"><b>{{me.username}}</b><small>{{admin?'管理员':'只读操作员'}}</small></div><button class="logout-button" title="退出登录" aria-label="退出登录" @click="logout"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5H5v14h4M14 8l4 4-4 4M9 12h9" /></svg></button></div></aside>

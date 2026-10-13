@@ -28,6 +28,7 @@ func TestDatabaseCopyRoundTripAndResume(t *testing.T) {
 		"INSERT INTO access_usage(account_id,cycle,bytes,retired_at) VALUES('a','cycle',4398046511104,4294967296)",
 		"INSERT INTO access_leases(id,account_id,token_hash,node_id,expires_at,is_stream,charged_cycle,charged_bytes) VALUES('lease','a','hash','node',4294967296,1,'cycle',10485760)",
 		"INSERT INTO access_rate VALUES('a',9000000000000000000)",
+		"INSERT INTO stream_reservations VALUES('2026-10-12','r',10485760)",
 		"INSERT INTO stream_sessions(id,route_id,started_at,bytes_sent,status) VALUES('s','r',4294967296,1099511627776,'completed')",
 	}
 	for _, query := range inputs {
@@ -42,7 +43,7 @@ func TestDatabaseCopyRoundTripAndResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if counts["audit_logs"] != 1 || counts["users"] != 1 {
+	if counts["audit_logs"] != 1 || counts["users"] != 1 || counts["stream_reservations"] != 1 {
 		t.Fatal(counts)
 	}
 	if _, exists := counts["relay_reports"]; exists {
@@ -69,6 +70,10 @@ func TestDatabaseCopyRoundTripAndResume(t *testing.T) {
 	defer restored.Close()
 	if _, err = database.Copy(context.Background(), target.DB, restored.DB, ""); err != nil {
 		t.Fatal("reverse copy", err)
+	}
+	var pending int64
+	if err = restored.DB.QueryRow("SELECT pending_bytes FROM stream_reservations").Scan(&pending); err != nil || pending != 10485760 {
+		t.Fatal("reservation checkpoint lost during copy", pending, err)
 	}
 	var diagnosticNode, diagnosticName string
 	var uploaded int

@@ -88,6 +88,9 @@ type Traffic struct {
 	Ingress int64  `json:"ingress_bytes"`
 	Egress  int64  `json:"egress_bytes"`
 }
+
+const trafficRetentionDays = 365
+
 type Store struct {
 	AgentID        string
 	DB             *database.DB
@@ -128,8 +131,12 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 
-	db.Exec("UPDATE stream_sessions SET status='interrupted',ended_at=? WHERE status='active'", time.Now().Unix())
-	return &Store{DB: db}, nil
+	store := &Store{DB: db}
+	if err = store.recoverStreamReservations(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return store, nil
 }
 
 // OpenConfigured preserves SQLite as the default for existing deployments.
@@ -180,12 +187,34 @@ func openPostgres(source string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	if _, err = db.Exec("UPDATE stream_sessions SET status='interrupted',ended_at=? WHERE status='active'", time.Now().Unix()); err != nil {
+	store := &Store{DB: db}
+	if err = store.recoverStreamReservations(); err != nil {
 		db.Close()
 		return nil, err
 	}
-	return &Store{DB: db}, nil
+	return store, nil
 }
+
+// Startup is exclusive (one control process or Agent per database). Refund only
+// durable unsent credit, atomically with marking abandoned sessions interrupted.
+func (s *Store) recoverStreamReservations() error {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`UPDATE traffic_daily SET egress_bytes=MAX(0,egress_bytes-COALESCE((SELECT pending_bytes FROM stream_reservations r WHERE r.date=traffic_daily.date AND r.route_id=traffic_daily.route_id),0))`); err != nil {
+		return err
+	}
+	if _, err = tx.Exec("DELETE FROM stream_reservations"); err != nil {
+		return err
+	}
+	if _, err = tx.Exec("UPDATE stream_sessions SET status='interrupted',ended_at=? WHERE status='active'", time.Now().Unix()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func list[T any](s *Store, kind string) ([]T, error) {
 	rows, e := s.DB.Query("SELECT payload FROM objects WHERE kind=? ORDER BY updated_at,id", kind)
 	if e != nil {
@@ -336,6 +365,10 @@ func (s *Store) Charge(route string, quota, ingress, egress int64) error {
 }
 
 func (s *Store) chargeAtLocked(route string, quota, ingress, egress int64, date string) error {
+	return s.chargeReservationLocked(route, quota, ingress, egress, date, false)
+}
+
+func (s *Store) chargeReservationLocked(route string, quota, ingress, egress int64, date string, reservation bool) error {
 	tx, e := s.DB.Begin()
 	if e != nil {
 		return e
@@ -376,17 +409,33 @@ func (s *Store) chargeAtLocked(route string, quota, ingress, egress int64, date 
 	if _, e = tx.Exec("UPDATE traffic_daily SET ingress_bytes=MAX(0,ingress_bytes+?),egress_bytes=MAX(0,egress_bytes+?) WHERE date=? AND route_id=?", ingress, egress, date, route); e != nil {
 		return e
 	}
+	if reservation && egress != 0 {
+		if egress > 0 {
+			_, e = tx.Exec("INSERT INTO stream_reservations VALUES(?,?,?) ON CONFLICT(date,route_id) DO UPDATE SET pending_bytes=stream_reservations.pending_bytes+excluded.pending_bytes", date, route, egress)
+		} else {
+			var result sql.Result
+			result, e = tx.Exec("UPDATE stream_reservations SET pending_bytes=pending_bytes+? WHERE date=? AND route_id=? AND pending_bytes>=?", egress, date, route, -egress)
+			if e == nil {
+				n, _ := result.RowsAffected()
+				if n != 1 {
+					return fmt.Errorf("invalid reservation refund")
+				}
+			}
+		}
+		if e != nil {
+			return e
+		}
+	}
 	return tx.Commit()
 }
 
-// ReserveStreamTraffic keeps quota charged in the database while excluding
-// unused in-flight credit from exported traffic. Database updates and exports
-// take mu before pendingMu; consuming credit only takes the short memory lock.
+// ReserveStreamTraffic atomically records quota occupancy and durable unsent
+// credit. Export subtracts that credit; startup refunds it after interruption.
 func (s *Store) reserveStreamTraffic(route string, quota, ingress, egress int64) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	date := time.Now().UTC().Format("2006-01-02")
-	if err := s.chargeAtLocked(route, quota, ingress, egress, date); err != nil {
+	if err := s.chargeReservationLocked(route, quota, ingress, egress, date, true); err != nil {
 		return "", err
 	}
 	s.pendingMu.Lock()
@@ -397,7 +446,22 @@ func (s *Store) reserveStreamTraffic(route string, quota, ingress, egress int64)
 	s.pendingTraffic[date+"/"+route] += egress
 	return date, nil
 }
-func (s *Store) consumeStreamTraffic(route, date string, sent int64) {
+
+// Persist each completed write without taking the quota transaction mutex or
+// holding a writer's memory lock. A crash cannot promote the unused grant to traffic.
+func (s *Store) consumeStreamTraffic(route, date string, sent int64) error {
+	result, err := s.DB.Exec("UPDATE stream_reservations SET pending_bytes=pending_bytes-? WHERE date=? AND route_id=? AND pending_bytes>=?", sent, date, route, sent)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("missing stream reservation")
+	}
+
 	s.pendingMu.Lock()
 	defer s.pendingMu.Unlock()
 	key := date + "/" + route
@@ -405,11 +469,12 @@ func (s *Store) consumeStreamTraffic(route, date string, sent int64) {
 	if s.pendingTraffic[key] == 0 {
 		delete(s.pendingTraffic, key)
 	}
+	return nil
 }
 func (s *Store) refundStreamTraffic(route, date string, unused int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.chargeAtLocked(route, 0, 0, -unused, date); err != nil {
+	if err := s.chargeReservationLocked(route, 0, 0, -unused, date, true); err != nil {
 		return err
 	}
 	s.pendingMu.Lock()
@@ -424,7 +489,7 @@ func (s *Store) refundStreamTraffic(route, date string, unused int64) error {
 func (s *Store) Traffic() ([]Traffic, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, e := s.DB.Query("SELECT date,route_id,ingress_bytes,egress_bytes FROM traffic_daily ORDER BY date DESC LIMIT 1000")
+	rows, e := s.DB.Query("SELECT t.date,t.route_id,t.ingress_bytes,MAX(0,t.egress_bytes-COALESCE(r.pending_bytes,0)) FROM traffic_daily t LEFT JOIN stream_reservations r ON r.date=t.date AND r.route_id=t.route_id ORDER BY t.date DESC LIMIT 1000")
 	if e != nil {
 		return nil, e
 	}
@@ -439,11 +504,6 @@ func (s *Store) Traffic() ([]Traffic, error) {
 	}
 	if e = rows.Err(); e != nil {
 		return nil, e
-	}
-	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
-	for i := range out {
-		out[i].Egress = max(int64(0), out[i].Egress-s.pendingTraffic[out[i].Date+"/"+out[i].RouteID])
 	}
 	return out, nil
 }
@@ -464,7 +524,8 @@ func (s *Store) Cleanup() {
 	now := time.Now().Unix()
 	s.DB.Exec("DELETE FROM request_diagnostics WHERE node_id='' AND id NOT IN (SELECT id FROM request_diagnostics WHERE node_id='' ORDER BY created_at DESC,id DESC LIMIT 1000)")
 	s.DB.Exec("DELETE FROM audit_logs WHERE created_at<?", now-365*86400)
-	s.DB.Exec("DELETE FROM traffic_daily WHERE date<?", time.Unix(now-365*86400, 0).UTC().Format("2006-01-02"))
+	s.DB.Exec("DELETE FROM traffic_daily WHERE date<?", time.Unix(now-trafficRetentionDays*86400, 0).UTC().Format("2006-01-02"))
+	s.DB.Exec("DELETE FROM stream_reservations WHERE pending_bytes=0 AND date<?", time.Unix(now-trafficRetentionDays*86400, 0).UTC().Format("2006-01-02"))
 	s.DB.Exec("DELETE FROM quota_leases WHERE date<?", time.Unix(now-90*86400, 0).UTC().Format("2006-01-02"))
 	s.DB.Exec("DELETE FROM remote_sessions WHERE updated_at<?", now-30*86400)
 	s.DB.Exec("DELETE FROM login_sessions WHERE expires_at<?", now)

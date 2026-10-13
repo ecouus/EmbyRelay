@@ -15,6 +15,7 @@ type AccessCommand struct {
 	DeviceName    string `json:"device_name,omitempty"`
 	ClientName    string `json:"client_name,omitempty"`
 	ClientVersion string `json:"client_version,omitempty"`
+	Paced         bool   `json:"paced,omitempty"`
 	Action        string `json:"action"`
 	AccountID     string `json:"account_id"`
 	KeyID         string `json:"key_id"`
@@ -38,12 +39,21 @@ type AccessResult struct {
 	SourceToken    string          `json:"source_token,omitempty"`
 	UserID         string          `json:"user_id,omitempty"`
 	Lease          string          `json:"lease,omitempty"`
+	RateBPS        int64           `json:"rate_bps,omitempty"`
 	WaitNS         int64           `json:"wait_ns,omitempty"`
 	Payload        json.RawMessage `json:"payload,omitempty"`
 	Target         string          `json:"target,omitempty"`
 }
 
 const streamAccessChunk = 10 << 20
+
+// Bound a shared-rate permit to at most 100 ms and 16 KiB of actual output.
+func accessPaceChunk(rate int64) int {
+	if rate <= 0 {
+		return 16 << 10
+	}
+	return int(min(int64(16<<10), max(int64(1), rate/10)))
+}
 
 func denied(msg string) (AccessResult, error) { return AccessResult{}, fmt.Errorf("%s", msg) }
 func (a *App) accessCall(ctx context.Context, in AccessCommand) (AccessResult, error) {
@@ -60,7 +70,7 @@ func (a *App) accessCall(ctx context.Context, in AccessCommand) (AccessResult, e
 	return a.accessCommand(ctx, "local", in)
 }
 func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) (AccessResult, error) {
-	if in.PublicImage && (in.Token != "" || in.Stream || !subscriptionImagePath.MatchString(in.Target) || (in.Action != "begin" && in.Action != "check" && in.Action != "charge" && in.Action != "finish")) {
+	if in.PublicImage && (in.Token != "" || in.Stream || !subscriptionImagePath.MatchString(in.Target) || (in.Action != "begin" && in.Action != "check" && in.Action != "charge" && in.Action != "pace" && in.Action != "finish")) {
 		return denied("无效的公开图片授权请求")
 	}
 	c, err := get[AccessAccount](a.Store, "access_account", in.AccountID)
@@ -178,7 +188,7 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 	if e := tx.QueryRow("SELECT bytes FROM access_usage WHERE account_id=? AND cycle=?", c.ID, cycle).Scan(&used); e != nil && e != sql.ErrNoRows {
 		return denied("流量计费不可用")
 	}
-	if in.Action != "info" && in.Action != "logout" && in.Action != "check" && c.Plan.TrafficBytes > 0 && used >= c.Plan.TrafficBytes {
+	if in.Action != "info" && in.Action != "logout" && in.Action != "check" && in.Action != "pace" && c.Plan.TrafficBytes > 0 && used >= c.Plan.TrafficBytes {
 		return denied("本周期流量已用尽")
 	}
 	out := AccessResult{UserID: userID}
@@ -220,7 +230,12 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 		if in.Stream {
 			isStream = 1
 		}
-		if _, err = tx.Exec("INSERT INTO access_leases(id,account_id,token_hash,node_id,expires_at,is_stream) VALUES(?,?,?,?,?,?)", out.Lease, c.ID, leaseHash, node, now.Unix()+30, isStream); err != nil {
+		paced := 0
+		if in.Paced {
+			paced = 1
+			out.RateBPS = c.Plan.RateBPS
+		}
+		if _, err = tx.Exec("INSERT INTO access_leases(id,account_id,token_hash,node_id,expires_at,is_stream,paced) VALUES(?,?,?,?,?,?,?)", out.Lease, c.ID, leaseHash, node, now.Unix()+30, isStream, paced); err != nil {
 			return denied("会话创建失败")
 		}
 		if !in.PublicImage {
@@ -229,13 +244,35 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 				return denied("源站凭据不可用")
 			}
 		}
-	case "check", "charge":
-		var lease int
-		if err = tx.QueryRow("SELECT COUNT(*) FROM access_leases WHERE id=? AND account_id=? AND token_hash=? AND node_id=? AND expires_at>?", in.Lease, c.ID, leaseHash, node, now.Unix()).Scan(&lease); err != nil || lease != 1 {
+	case "check", "charge", "pace":
+		var paced int
+		if err = tx.QueryRow("SELECT paced FROM access_leases WHERE id=? AND account_id=? AND token_hash=? AND node_id=? AND expires_at>?", in.Lease, c.ID, leaseHash, node, now.Unix()).Scan(&paced); err != nil {
 			return denied("播放授权已失效")
 		}
 		if _, err = tx.Exec("UPDATE access_leases SET expires_at=? WHERE id=?", now.Unix()+30, in.Lease); err != nil {
 			return denied("授权续期失败")
+		}
+		if in.Action == "pace" {
+			if paced != 1 || in.Bytes <= 0 || in.Bytes > int64(accessPaceChunk(c.Plan.RateBPS)) {
+				return denied("invalid pace request")
+			}
+			if c.Plan.RateBPS > 0 {
+				var next int64
+				err = tx.QueryRow("SELECT next_ns FROM access_rate WHERE account_id=?", c.ID).Scan(&next)
+				if err != nil && err != sql.ErrNoRows {
+					return denied("限速服务不可用")
+				}
+				if next > now.UnixNano() {
+					// Waiting does not reserve future credit. Cancellation and
+					// concurrent waiters cannot create an unspent queue of debt.
+					out.WaitNS = next - now.UnixNano()
+				} else {
+					duration := int64(float64(in.Bytes) / float64(c.Plan.RateBPS) * float64(time.Second))
+					if _, err = tx.Exec("INSERT INTO access_rate VALUES(?,?) ON CONFLICT(account_id) DO UPDATE SET next_ns=excluded.next_ns", c.ID, now.UnixNano()+duration); err != nil {
+						return denied("限速服务不可用")
+					}
+				}
+			}
 		}
 		if in.Action == "charge" {
 			if in.Bytes < 0 || in.Bytes > streamAccessChunk {
@@ -253,7 +290,7 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 			if _, err = tx.Exec("UPDATE access_leases SET charged_cycle=?,charged_bytes=? WHERE id=?", cycle, in.Bytes, in.Lease); err != nil {
 				return denied("流量计费失败")
 			}
-			if c.Plan.RateBPS > 0 {
+			if c.Plan.RateBPS > 0 && paced == 0 {
 				var next int64
 				tx.QueryRow("SELECT next_ns FROM access_rate WHERE account_id=?", c.ID).Scan(&next)
 				next = max(next, now.UnixNano()) + int64(float64(in.Bytes)/float64(c.Plan.RateBPS)*float64(time.Second))

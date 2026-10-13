@@ -164,6 +164,8 @@ func (g *Gateway) modifyResponse(resp *http.Response) error {
 	reportStatus(resp.Request.Context(), resp.StatusCode)
 	prefix := options(resp.Request.Context()).prefix
 	resp.Header.Set("Referrer-Policy", "no-referrer")
+	resp.Header.Set("Content-Security-Policy", PlaybackCSP)
+	resp.Header.Set("X-Content-Type-Options", "nosniff")
 	if p, ok := resp.Request.Context().Value(accessProtectionKey{}).(accessProtection); ok {
 		return protectAccessResponse(resp, prefix, p)
 	}

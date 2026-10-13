@@ -246,6 +246,7 @@ func (a *App) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if strings.HasPrefix(r.URL.Path, "/r/") {
+		w.Header().Set("Content-Security-Policy", proxy.PlaybackCSP)
 		a.play(w, r)
 		return
 	}

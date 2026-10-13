@@ -320,8 +320,13 @@ func (a *App) report(node Node, in Heartbeat) error {
 			continue
 		}
 		day, e := time.Parse("2006-01-02", t.Date)
-		if e != nil || day.After(time.Now()) || time.Since(day) > 32*24*time.Hour || t.Ingress < 0 || t.Egress < 0 {
+		if e != nil || day.After(time.Now()) || t.Ingress < 0 || t.Egress < 0 {
 			return fmt.Errorf("invalid traffic report")
+		}
+		// Reconcile the entire retained history. Records outside local retention
+		// cannot block liveness; they no longer participate in accounting.
+		if t.Date < time.Now().UTC().AddDate(0, 0, -trafficRetentionDays).Format("2006-01-02") {
+			continue
 		}
 		id := node.ID + ":" + t.Date + ":" + t.RouteID
 		var previous Traffic
@@ -363,9 +368,14 @@ func (a *App) report(node Node, in Heartbeat) error {
 	}
 	node.TrafficAccounting = in.TrafficAccounting
 	node.LastSeen = time.Now().Unix()
+	capabilitiesChanged := node.SubscriptionSupport != in.SubscriptionSupport || node.DeviceIdentitySupport != in.DeviceIdentitySupport
 	node.SubscriptionSupport = in.SubscriptionSupport
 	node.DeviceIdentitySupport = in.DeviceIdentitySupport
 	node.ConfigVersion = in.Version
+	if capabilitiesChanged {
+		// Require a config poll after the first capability handshake.
+		node.ConfigVersion = 0
+	}
 	node.Active = in.Active
 	if _, e = tx.Exec("UPDATE objects SET payload=? WHERE kind='node' AND id=?", string(Encode(node)), node.ID); e != nil {
 		return e

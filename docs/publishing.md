@@ -17,8 +17,8 @@ Docker 仓库名称必须小写。支持 linux/amd64（常见 Debian/Ubuntu VPS�
 ## 发布版本
 
 ```sh
-git tag v1.0.18
-git push origin v1.0.18
+git tag v1.0.19
+git push origin v1.0.19
 ```
 
 ```mermaid
@@ -29,7 +29,7 @@ flowchart LR
     D --> E[服务器拉取并重建容器]
 ```
 
-正式标签 `v1.0.18` 对应 `1.0.18`、`1.0`、`latest`；预发布不更新 `latest`。手动运行工作流时选择版本标签。
+正式标签 `v1.0.19` 对应 `1.0.19`、`1.0`、`latest`；预发布不更新 `latest`。手动运行工作流时选择版本标签。
 
 ## Debian / Ubuntu 拉取部署
 
@@ -40,7 +40,7 @@ docker compose -f deploy/docker-compose.yml pull
 docker compose -f deploy/docker-compose.yml up -d --no-build
 ```
 
-本次发布版本为 `1.0.18`，同时更新 `latest`，目标架构为 AMD64/ARM64。HTTPS 和 Agent 使用同一镜像，参照 deployment.md 的配置文件。
+本次发布版本为 `1.0.19`，同时更新 `latest`，目标架构为 AMD64/ARM64。HTTPS 和 Agent 使用同一镜像，参照 deployment.md 的配置文件。
 
 ## 本机手动推送（可选）
 
@@ -48,10 +48,23 @@ docker compose -f deploy/docker-compose.yml up -d --no-build
 # 已登录 Docker Hub 时无需重复 docker login
 docker buildx build --platform linux/amd64,linux/arm64 \
   -f deploy/Dockerfile \
-  -t ecouus/embyrelay:1.0.18 -t ecouus/embyrelay:1.0 -t ecouus/embyrelay:latest --push .
+  -t ecouus/embyrelay:1.0.19 -t ecouus/embyrelay:1.0 -t ecouus/embyrelay:latest --push .
 ```
 
 源代码仓库不包含数据库、master.key、Agent 身份、.env、node_modules、本机构建二进制或临时验收截图（README 展示图片保存在 docs/ 并随仓库提交）。前端 dist 在 CI/Docker 构建时生成。
+
+## 1.0.19 变更
+
+- 播放代理响应使用严格 sandbox CSP，隔离用户源站返回的 HTML/SVG，防止获得管理界面的同源权限。
+- 升级失败时以升级前实际容器镜像 ID 重建服务，禁止重新拉取，并验证恢复后的镜像及版本；HTTPS 验证失败也会回滚。
+- Agent 心跳支持整个 365 天流量保留期内的历史补报；超出保留期的记录不再阻断心跳。
+- Agent 根据有效配置内容同步，同版本内容变化、离线缓存过期后的重连均会重新应用；能力握手后等待下一轮配置同步再参与分流。
+- 订阅流量批量授权与限速分离，按小块实际输出共享速率预算，取消等待不会累计未来速率债务。
+- 数据库 v14 持久化路由未发送额度，异常退出后自动退款，并保留已提交的实际发送计量；SQLite/PostgreSQL 与离线复制工具同步支持。
+- 登录页支持明确选择订阅用户中心，导出的用户中心链接自动选择订阅身份，兼容存量同名账号。
+- 增加 HTML/SVG 隔离、历史心跳、同版本重连、限速取消重试、进程强杀恢复和安装回滚回归测试。
+
+升级前备份数据库和 master.key；先升级控制端，再升级全部 Agent。限速优化需双方均升级。回退需恢复配套旧数据库备份。异常退出瞬间已写入网络但尚未提交计量的最后一个输出块无法与网络原子提交，可能少计；未发送的整块预扣不会被计为实际流量。旧版已遗留的预扣没有可恢复的明细，本次迁移不会猜测或改写历史计量。
 
 ## 1.0.18 变更
 
