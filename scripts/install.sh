@@ -711,6 +711,8 @@ def route_upgrade(args):
         return False
     directory = Path(args.directory).expanduser().resolve() if args.directory else None
     options = (['--version', args.version] if args.version else []) + (['--yes'] if args.yes else [])
+    if args.public_url:
+        options += ['--public-url', args.public_url]
     if args.instance:
         options += ['--instance', args.instance]
     if args.action is None:
@@ -726,7 +728,7 @@ def route_upgrade(args):
             if config.get('x-embyrelay-installer') and config.get('services', {}).get('embyrelay', {}).get('environment', {}).get('RELAY_ADMIN_PASSWORD'):
                 return False
         if not shared_upgrade(directory, args.role, options + ['--detect-only']):
-            if args.instance or args.role or args.version:
+            if args.instance or args.role or args.version or args.public_url:
                 raise ValueError('未发现所指定的已有部署；请核对目录、角色或实例，不会创建新部署')
             return False
     if args.database:
@@ -744,6 +746,7 @@ def main():
     parser.add_argument('--database', choices=['sqlite', 'postgres'], help='首次安装的数据库类型')
     parser.add_argument('--database-port', type=int, default=15432, help='PostgreSQL 本机端口（默认 15432）')
     parser.add_argument('--version', help='upgrade 目标版本')
+    parser.add_argument('--public-url', help='升级后验收的 HTTPS 入口')
     parser.add_argument('--yes', action='store_true', help='upgrade 非交互确认')
     parser.add_argument('--backup-file', help='restore 操作的备份文件')
     args = parser.parse_args()
@@ -769,6 +772,8 @@ def main():
         directory = Path(args.directory or '/opt/embyrelay').expanduser().resolve()
         if action == 'upgrade':
             options = (['--version', args.version] if args.version else []) + (['--yes'] if args.yes else [])
+            if args.public_url:
+                options += ['--public-url', args.public_url]
             shared_upgrade(Path(args.directory).resolve() if args.directory else None, args.role, options + (['--instance', args.instance] if args.instance else []))
             return
         path = directory / 'docker-compose.yml'

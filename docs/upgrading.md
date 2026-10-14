@@ -6,7 +6,7 @@
 curl -fL --retry 3 https://raw.githubusercontent.com/ecouus/EmbyRelay/main/scripts/install.sh -o embyrelay-install.sh && sudo bash embyrelay-install.sh
 ```
 
-仓库检出环境可直接执行 `sudo bash scripts/install.sh upgrade`。直接运行 `install.sh` 会先识别已有面板或 Agent，有部署进入公共升级事务，无部署才进入首次安装控制端菜单；未完成首次控制端安装保留恢复路径。多实例选择、识别错误均不会退回新安装。`install.sh upgrade` 强制仅升级，支持 `--directory`、`--role`、`--instance`、`--version` 和 `--yes`。高级参数及下文恢复示例继续使用兼容入口 `upgrade.sh`。单文件下载入口通过 HTTPS 获取同一仓库的公共 Python 实现；查询或下载失败会退出，不会报告“已经最新”。该入口不依赖 GitHub Release。
+仓库检出环境可直接执行 `sudo bash scripts/install.sh upgrade`。直接运行 `install.sh` 会先识别已有面板或 Agent，有部署进入公共升级事务，无部署才进入首次安装控制端菜单；未完成首次控制端安装保留恢复路径。多实例选择、识别错误均不会退回新安装。`install.sh upgrade` 强制仅升级，支持 `--directory`、`--role`、`--instance`、`--version`、`--public-url` 和 `--yes`。恢复等高级参数继续使用兼容入口 `upgrade.sh`。单文件下载入口通过 HTTPS 获取同一仓库的公共 Python 实现；查询或下载失败会退出，不会报告“已经最新”。该入口不依赖 GitHub Release。
 
 ## 范围与运行要求
 
@@ -78,7 +78,7 @@ sudo bash embyrelay-upgrade.sh --version 1.0.20 --allow-downgrade --yes
 安装元数据中的域名、应用 `RELAY_PUBLIC_URL` 或 `io.embyrelay.public-url` 标签用于确定 HTTPS 入口。外部手动反代无法从 Compose 明确确定域名时，指定自己的 origin：
 
 ```bash
-sudo bash embyrelay-upgrade.sh --directory /srv/media-relay --public-url https://relay.example.com --yes
+sudo bash embyrelay-install.sh upgrade --directory /srv/media-relay --public-url https://relay.example.com --yes
 ```
 
 不跟随重定向，不忽略证书错误；HTTPS 响应还需匹配版本、角色与数据库类型。未配置明确入口时报告本机验收成功、公网入口待用户验证，不声称 HTTPS 已验证。暂不支持入口子路径或要求额外 HTTP 认证的反代自动验收。

@@ -294,7 +294,7 @@ class MainInstallerTests(unittest.TestCase):
 
 
     def route_args(self, **values):
-        defaults = dict(action=None, directory=None, version=None, yes=False, role=None, instance=None, database=None)
+        defaults = dict(action=None, directory=None, version=None, public_url=None, yes=False, role=None, instance=None, database=None)
         defaults.update(values)
         return installer.argparse.Namespace(**defaults)
 
@@ -316,6 +316,11 @@ class MainInstallerTests(unittest.TestCase):
         with patch.object(installer, 'shared_upgrade') as shared:
             self.assertTrue(installer.route_upgrade(self.route_args(action='upgrade', directory='/srv/node', role='agent', instance='custom/node', version='1.0.21', yes=True)))
             shared.assert_called_once_with(Path('/srv/node'), 'agent', ['--version', '1.0.21', '--yes', '--instance', 'custom/node'])
+
+    def test_explicit_upgrade_forwards_public_https_origin(self):
+        with patch.object(installer, 'shared_upgrade') as shared:
+            self.assertTrue(installer.route_upgrade(self.route_args(action='upgrade', directory='/srv/panel', role='control', version='1.0.23', public_url='https://relay.example.com', yes=True)))
+            shared.assert_called_once_with(Path('/srv/panel'), 'control', ['--version', '1.0.23', '--yes', '--public-url', 'https://relay.example.com'])
 
     def test_missing_selected_instance_does_not_install(self):
         with patch.object(installer.shutil, 'which', return_value='/usr/bin/docker'), patch.object(Path, 'is_file', return_value=False), patch.object(installer, 'shared_upgrade', return_value=False):
