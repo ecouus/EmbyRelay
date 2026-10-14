@@ -34,7 +34,7 @@ git push origin vX.Y.Z
 bash scripts/publish-server.sh --publish vX.Y.Z
 ```
 
-脚本先运行验证，再构建 linux/amd64 和 linux/arm64 镜像并检查本机容器健康，然后通过缓存构建推送镜像，最后显示远程 manifest。正式版本更新 `X.Y.Z`、`X.Y`、`latest`，预发布只推送完整预发布版本。验证失败不发布镜像。GitHub Release 更新描述和 A/B 生产升级仍分别执行。
+脚本先运行一次完整 SQLite/Go race 回归，再执行 PostgreSQL 数据库专项回归（清单位于 `scripts/test-postgres.sh`），分别输出阶段耗时；之后构建 linux/amd64 和 linux/arm64 镜像并检查本机容器健康，然后通过缓存构建推送镜像，最后显示远程 manifest。正式版本更新 `X.Y.Z`、`X.Y`、`latest`，预发布只推送完整预发布版本。验证失败不发布镜像。GitHub Release 更新描述和 A/B 生产升级仍分别执行。
 
 ```mermaid
 flowchart LR
@@ -43,6 +43,28 @@ flowchart LR
     C --> D[服务器推送 Docker Hub]
     D --> E[备份并依次升级 A 和 B]
 ```
+
+## 开发验证与 PostgreSQL 测试范围
+
+日常开发先运行与修改相关的测试及必要构建；已确定要发布时，由发布脚本统一执行完整验证，避免先手动完整验证、紧接着再运行发布脚本。发布检查不复用未提交代码的外部“通过”标记；Go 自身有效的测试缓存继续保留。
+
+常规发布和 GitHub CI 的 PostgreSQL 阶段只运行数据库专项测试，涵盖跨数据库复制、历史迁移、登录名约束、账号及会话持久化、源站隔离、设备规则、诊断留存、配额、心跳、计量预留、并发、退款和用量清理。完整 SQLite/Go 回归仍覆盖全部测试，包括协议、WebSocket、媒体播放及限速。新增数据库回归用例时同步更新清单；脚本会检查清单中的测试确实存在，防止重命名后悄悄漏测。
+
+```sh
+# 查看数据库专项测试清单，不访问数据库
+bash scripts/test-postgres.sh --list
+
+# 先设置 EMBYRELAY_TEST_POSTGRES_URL，必须指向一次性测试数据库
+bash scripts/test-postgres.sh
+
+# 涉及数据库方言、通用 SQL 适配或大范围 schema/存储改动时，额外运行完整 PostgreSQL 回归
+bash scripts/test-postgres.sh --full
+
+# 也可以让发布脚本的 PostgreSQL 阶段使用完整模式（--publish 同样支持）
+EMBYRELAY_POSTGRES_TEST_MODE=full bash scripts/publish-server.sh --check
+```
+
+PostgreSQL 测试在独立 schema 中执行并清理数据，不得使用生产 DSN。`internal/database` 的方言单元测试和 `migrations` 的 SQLite 回归已包含在第一次完整回归；真实 PostgreSQL 的迁移、复制和业务数据库检查由控制端专项用例覆盖。
 
 ## GitHub 手动发布备用入口
 
@@ -57,11 +79,21 @@ docker compose -f deploy/docker-compose.yml pull
 docker compose -f deploy/docker-compose.yml up -d --no-build
 ```
 
-当前已发布版本为 `1.0.21`，`latest` 指向该版本，目标架构为 AMD64/ARM64。HTTPS 和 Agent 使用同一镜像，参照 deployment.md 的配置文件。
+当前发布版本为 `1.0.22`，`latest` 指向该版本，目标架构为 AMD64/ARM64。HTTPS 和 Agent 使用同一镜像，参照 deployment.md 的配置文件。
 
 ## 构建上下文
 
 源代码仓库不包含数据库、master.key、Agent 身份、.env、node_modules、本机构建二进制或临时验收截图（README 展示图片保存在 docs/ 并随仓库提交）。前端 dist 在验证/Docker 构建时生成；本地交接文档 CLAUDE.md 同时被 Git 和 Docker 构建上下文忽略。
+
+## 1.0.22 更新
+
+- 新增控制端与 Agent 共用的一键升级入口，自动发现 Compose 实例与最新正式镜像；支持指定目录、版本和实例，歧义时拒绝自动选择。
+- 升级前验证实际镜像并一致性备份 SQLite 或同项目专用 PostgreSQL 17、配置、主密钥和 Agent 身份；验收失败恢复匹配数据、配置与捕获的实际旧镜像。原安装器升级入口复用公共事务。
+- 优化登录文字错峰入场、页面过渡及交互反馈，支持减少动态效果；深色主题采用纯黑背景与中性灰卡片，移除独立启动画面和页脚分隔线，登录页 GitHub 链接移至安全说明旁。
+- 发布与 CI 保留完整 SQLite/Go 回归，PostgreSQL 阶段使用数据库专项清单，并输出各阶段耗时，保留完整 PostgreSQL 验证入口。
+- 增加升级、回滚、身份保留、中断恢复及并发锁的常规与真实 Docker 回归。无数据库迁移，schema 仍为 15。
+
+通用升级支持范围与恢复命令见 [升级手册](upgrading.md)。先升级控制端，再升级 Agent；Agent 本机健康不能代替控制端心跳与配置同步验收。外部/共享数据库等不受支持部署安全退出，需人工升级。
 
 ## 1.0.21 更新
 

@@ -72,14 +72,24 @@ sudo bash embyrelay-install.sh uninstall   # 卸载；默认保留数据与证�
 
 可追加 `--directory /你的部署目录`；后续管理必须指定相同目录。脚本每台主机管理一个固定的 `embyrelay-managed` Compose 项目，不能借助不同目录部署多个实例，也不会接管已有手动部署或 Agent 项目。
 
+**通用一键升级（控制端与 Agent 共用）：**
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://raw.githubusercontent.com/ecouus/EmbyRelay/main/scripts/upgrade.sh -o embyrelay-upgrade.sh && sudo bash embyrelay-upgrade.sh
+```
+
+自动识别 Compose 实例、发现最新正式镜像、备份、更新固定版本、验收并在失败时恢复旧镜像及匹配数据；不要求 GitHub Release 已创建。自定义目录用 `--directory`，指定版本用 `--version`，多实例用 `--instance PROJECT/SERVICE`。支持范围、PostgreSQL 边界与恢复命令见 [通用升级手册](docs/upgrading.md)。仓库检出环境可执行 `sudo bash scripts/upgrade.sh`。
+
 **升级与数据保留：**
 
 ```mermaid
 flowchart LR
-    A[停止后端] --> B[备份完整数据目录]
-    B --> C[拉取 latest 镜像]
-    C --> D[启动并迁移数据库]
-    D --> E[检查运行状态]
+    A[查询并验证目标镜像] --> B[停止目标服务并一致性备份]
+    B --> C[更新固定版本并重建]
+    C --> D[版本/镜像/数据库/入口验收]
+    D --> E{通过？}
+    E -->|否| F[恢复旧数据/配置/实际旧镜像]
+    E -->|是| G[保留备份]
 ```
 
 备份保存在部署目录的 `backups/`，包含数据库与主密钥。升级失败时，用备份和原镜像版本恢复。
@@ -606,9 +616,7 @@ EmbyRelay 默认记录直接连接者的地址。只有连接来自 `RELAY_TRUST
 Agent 一键脚本使用 Linux host 网络，宿主机 Nginx + Certbot 管理 HTTPS。更新时保留 Compose 项目名和数据卷：
 
 ```bash
-cd /opt/embyrelay-agent
-docker compose pull
-docker compose up -d --force-recreate
+sudo bash embyrelay-upgrade.sh --directory /你的Agent部署目录
 ```
 
 **已有 bridge 部署：保留端口映射，配置实际代理地址**

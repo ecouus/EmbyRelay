@@ -1,0 +1,110 @@
+/* Motion tokens: fast feedback, short navigation, and a slower first impression. */
+:root {
+  --motion-fast: 140ms;
+  --motion-ui: 220ms;
+  --motion-view: 280ms;
+  --motion-intro: 480ms;
+  --motion-ease: cubic-bezier(.22, 1, .36, 1);
+  --motion-settle: cubic-bezier(.4, 0, .2, 1);
+}
+@keyframes relay-reveal {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes relay-card-arrive {
+  from { opacity: 0; transform: translateY(6px) scale(.99); }
+  to { opacity: 1; transform: none; }
+}
+/* Two equivalent names restart on navigation without replacing the page's DOM. */
+@keyframes relay-view-arrive { from { opacity: .65; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes relay-view-return { from { opacity: .65; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.story-line { display: block; }
+.login-story > .brand,
+.login-story > div > .eyebrow,
+.login-story .story-line,
+.login-story > div > p,
+.login-story .network-art,
+.login-story > small {
+  animation: relay-reveal var(--motion-intro) var(--motion-ease) backwards;
+}
+.login-story > div > .eyebrow { animation-delay: 60ms; }
+.login-story .story-line:first-child { animation-delay: 120ms; }
+.login-story .story-line:last-child { animation-delay: 200ms; }
+.login-story > div > p { animation-delay: 280ms; }
+.login-story .network-art { animation-delay: 340ms; }
+.login-story > small { animation-delay: 380ms; }
+.login-form, .portal-login {
+  animation: relay-card-arrive var(--motion-intro) var(--motion-ease) backwards;
+}
+.login-form > :is(.eyebrow, h2, p, label, .n-button, .login-foot),
+.portal-login > :is(.eyebrow, h1, p, .n-form-item, .n-button, .portal-login-note) {
+  animation: relay-reveal 400ms var(--motion-ease) backwards;
+}
+.login-form > .eyebrow, .portal-login > .eyebrow { animation-delay: 70ms; }
+.login-form > h2, .portal-login > h1 { animation-delay: 110ms; }
+.login-form > p, .portal-login > p { animation-delay: 150ms; }
+.login-form > label, .portal-login > .n-form-item { animation-delay: 200ms; }
+.login-form > label + label, .portal-login > .n-form-item + .n-form-item { animation-delay: 250ms; }
+.login-form > .n-button, .portal-login > .n-button { animation-delay: 290ms; }
+.login-form > .login-foot, .portal-login-note { animation-delay: 330ms; }
+.motion-page { animation: relay-view-arrive var(--motion-view) var(--motion-ease); }
+.motion-page.motion-page-return { animation-name: relay-view-return; }
+:is(.dashboard-stats, .portal-stats) > article,
+.trend-grid > .panel, .dashboard-bottom > .panel,
+.portal-title, .node-grid > .node-card {
+  animation: relay-card-arrive 380ms var(--motion-ease) backwards;
+}
+:is(.dashboard-stats, .portal-stats) > article:nth-child(2), .trend-grid > .panel:nth-child(2) { animation-delay: 45ms; }
+:is(.dashboard-stats, .portal-stats) > article:nth-child(3), .trend-grid > .panel:nth-child(3) { animation-delay: 90ms; }
+.dashboard-stats > article:nth-child(4) { animation-delay: 135ms; }
+.dashboard-stats > article:nth-child(5) { animation-delay: 180ms; }
+.dashboard-bottom > .panel { animation-delay: 120ms; }
+.portal-title > :is(.eyebrow, h1, p) { animation: relay-reveal 380ms var(--motion-ease) backwards; }
+.portal-title > h1 { animation-delay: 50ms; }
+.portal-title > p { animation-delay: 100ms; }
+/* Updates to text, counters, or table rows do not replay entrance effects. */
+.empty, .record-empty, .secret-box, .key-create + .panel {
+  animation: relay-reveal var(--motion-ui) var(--motion-ease);
+}
+:is(.n-button, nav button, .section-tabs button, .logout-button, .mobile-menu, .mobile-close) {
+  transition: transform var(--motion-fast) var(--motion-ease),
+    color var(--motion-ui) var(--motion-settle),
+    background-color var(--motion-ui) var(--motion-settle),
+    border-color var(--motion-ui) var(--motion-settle),
+    box-shadow var(--motion-ui) var(--motion-settle);
+}
+:is(.n-input, .n-base-selection) {
+  transition: box-shadow var(--motion-ui) var(--motion-settle), background-color var(--motion-ui) var(--motion-settle);
+}
+:is(.n-input, .n-base-selection):focus-within { box-shadow: 0 0 0 3px var(--accent-soft); }
+:is(nav button, .section-tabs button, .logout-button, .mobile-menu, .mobile-close):focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 3px;
+}
+:is(.metric-card, .portal-stats article, .source, .node-card) {
+  transition: transform var(--motion-ui) var(--motion-ease),
+    border-color var(--motion-ui) var(--motion-settle), box-shadow var(--motion-ui) var(--motion-settle);
+}
+@media (hover: hover) and (pointer: fine) {
+  .n-button:not(.n-button--disabled):not(.n-button--loading):hover { transform: translateY(-1px); }
+  :is(.metric-card, .portal-stats article, .node-card):hover { transform: translateY(-2px); border-color: var(--accent); }
+  .portal .source:hover { transform: translateY(-2px); }
+}
+:is(.n-button:not(.n-button--disabled):not(.n-button--loading), nav button, .section-tabs button, .logout-button):active {
+  transform: scale(.98);
+}
+.n-button--disabled, .n-button--loading { transform: none; }
+.github-footer a { transition: color var(--motion-ui) var(--motion-settle), transform var(--motion-fast) var(--motion-ease); }
+.github-footer a:active { transform: scale(.97); }
+/* Small screens use the same rhythm with less travel. */
+@media (max-width: 760px) {
+  .login-form { animation-delay: 0ms; }
+  .login-story > .brand { animation-duration: 320ms; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+
+.feedback-enter-active { transition: opacity var(--motion-ui) var(--motion-settle), transform var(--motion-ui) var(--motion-ease); }
+.feedback-leave-active { transition: opacity var(--motion-fast) var(--motion-settle); pointer-events: none; }
+.feedback-enter-from { opacity: 0; transform: translateY(4px); }
+.feedback-leave-to { opacity: 0; }

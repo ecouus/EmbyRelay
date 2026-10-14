@@ -9,6 +9,8 @@ if ! command -v python3 >/dev/null; then
   apt-get update
   apt-get install -y python3 ca-certificates curl
 fi
+export EMBYRELAY_INSTALLER_DIRECTORY
+EMBYRELAY_INSTALLER_DIRECTORY=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 exec python3 - "$@" <<'PY'
 import argparse
 import hashlib
@@ -452,22 +454,8 @@ def service_version(compose):
     return version
 
 
-def upgrade(compose, directory, path, config):
-    previous_image = service_image(compose)
-    previous_version = service_version(compose)
-    saved_backup = backup(compose, directory, config, automatic=True)
-    setup_nginx(compose, directory, path, config)
-    try:
-        run(compose + ['pull'])
-        start(compose, path, config)
-        if not check_https(config['x-embyrelay-installer']['domain']):
-            raise ValueError('升级后的 HTTPS 验证失败')
-    except BaseException:
-        print('升级失败，正在恢复升级前镜像和数据…', file=sys.stderr)
-        restore(compose, directory, config, saved_backup, automatic=True,
-                image=previous_image, version=previous_version)
-        raise
-    prune_automatic_backups(directory)
+def upgrade(compose, directory, path, config, options=None):
+    shared_upgrade(directory, 'control', options)
 
 
 def uninstall(compose, directory):
@@ -682,12 +670,32 @@ def setup_nginx(compose, directory, path, config):
         hook.chmod(0o700)
 
 
+def shared_upgrade(directory, role, options=None):
+    script = Path(os.environ.get('EMBYRELAY_INSTALLER_DIRECTORY', '.')) / 'upgrade.py'
+    temporary = None
+    if not script.is_file():
+        temporary = Path(tempfile.mkdtemp(prefix='embyrelay-upgrade-', dir='/var/tmp'))
+        script = temporary / 'upgrade.py'
+        try:
+            with urllib.request.urlopen('https://raw.githubusercontent.com/ecouus/EmbyRelay/main/scripts/upgrade.py', timeout=30) as response:
+                write_private(script, response.read().decode())
+        except Exception:
+            raise ValueError('公共升级器下载失败；已有部署未修改')
+    result = subprocess.run(['python3', str(script), '--directory', str(directory), '--role', role] + (options or []))
+    if result.returncode:
+        raise ValueError('公共升级器未通过；请查看其错误和保留的恢复命令')
+    if temporary:
+        shutil.rmtree(temporary)
+
+
 def main():
     parser = argparse.ArgumentParser(description='EmbyRelay 安装与管理（Linux root，默认 host 网络）')
     parser.add_argument('action', nargs='?', choices=['install', 'upgrade', 'backup', 'restore', 'migrate-db', 'password', 'uninstall', 'status', 'logs'])
     parser.add_argument('--directory', default='/opt/embyrelay', help='部署目录，管理时使用相同路径')
     parser.add_argument('--database', choices=['sqlite', 'postgres'], help='首次安装的数据库类型')
     parser.add_argument('--database-port', type=int, default=15432, help='PostgreSQL 本机端口（默认 15432）')
+    parser.add_argument('--version', help='upgrade 目标版本')
+    parser.add_argument('--yes', action='store_true', help='upgrade 非交互确认')
     parser.add_argument('--backup-file', help='restore 操作的备份文件')
     args = parser.parse_args()
     os.umask(0o077)
@@ -708,6 +716,10 @@ def main():
             if not action:
                 raise ValueError('无效选项')
         directory = Path(args.directory).expanduser().resolve()
+        if action == 'upgrade':
+            options = (['--version', args.version] if args.version else []) + (['--yes'] if args.yes else [])
+            shared_upgrade(directory, 'control', options)
+            return
         path = directory / 'docker-compose.yml'
         config = load(path) if path.exists() else None
         pending = directory / 'docker-compose.migrate.yml'
@@ -720,11 +732,21 @@ def main():
             raise ValueError('已有部署不能直接更换数据库；请先迁移数据，当前配置未修改')
         if action != 'install' and config is None:
             raise ValueError('未发现本脚本管理的配置，请指定正确的 --directory')
+        if action == 'install' and config is not None and not config['services']['embyrelay']['environment'].get('RELAY_ADMIN_PASSWORD'):
+            options = (['--version', args.version] if args.version else []) + (['--yes'] if args.yes else [])
+            shared_upgrade(directory, 'control', options)
+            return
         ensure_docker()
+        directory.mkdir(parents=True, exist_ok=True)
+        instance_lock = open(directory / '.install.lock', 'a')
+        try:
+            fcntl.flock(instance_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('此目录已有安装/升级任务运行')
         compose = ['docker', 'compose', '--project-name', PROJECT, '--project-directory', str(directory), '-f', str(path)]
         if action == 'install':
             if config is None:
-                if directory.exists() and any(p.name != 'backups' for p in directory.iterdir()):
+                if directory.exists() and any(p.name not in ('backups', '.install.lock') for p in directory.iterdir()):
                     raise ValueError('安装目录非空；请使用新的空目录，避免覆盖已有文件')
                 # Do not silently adopt volumes belonging to another directory/old deployment.
                 existing = run(['docker', 'volume', 'ls', '--format', '{{.Name}}'], capture_output=True, text=True).stdout.splitlines()

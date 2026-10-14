@@ -87,45 +87,6 @@ class DockerDatabaseTests(unittest.TestCase):
         installer.reset_password(self.compose, 'admin', 'replacement-password-123')
         installer.healthy(self.compose, 'postgres')
 
-    def test_failed_upgrade_restores_running_image_database_and_key(self):
-        old_image = os.getenv('EMBYRELAY_ROLLBACK_OLD_IMAGE', 'ecouus/embyrelay:1.0.18')
-        subprocess.run(['docker', 'pull', old_image], check=True)
-        new_image = installer.IMAGE
-        with patch.object(installer, 'IMAGE', old_image):
-            config = self.install('postgres')
-        before_image = installer.service_image(self.compose)
-        before_version = installer.service_version(self.compose)
-        before_schema = self.sql('SELECT MAX(version) FROM schema_migrations')
-        def key_hash():
-            return subprocess.check_output(self.compose + ['exec', '-T', 'embyrelay',
-                                              'sha256sum', '/data/master.key'], text=True).split()[0]
-        before_key = key_hash()
-        self.sql("INSERT INTO settings VALUES('rollback_marker','before')")
-        config['services']['embyrelay']['image'] = new_image
-        installer.save(self.path, config)
-        original_start = installer.start
-        original_run = installer.run
-        def start(*args):
-            original_start(*args)
-            self.assertNotEqual(installer.service_image(self.compose), before_image)
-            self.assertNotEqual(installer.service_version(self.compose), before_version)
-            self.assertEqual(self.sql('SELECT MAX(version) FROM schema_migrations'), '15')
-            self.sql("UPDATE settings SET value='after' WHERE key='rollback_marker'")
-            raise ValueError('injected post-upgrade health failure')
-        def run(command, **kwargs):
-            if command[-1] == 'pull':
-                return subprocess.CompletedProcess(command, 0)
-            return original_run(command, **kwargs)
-        with patch.object(installer, 'setup_nginx'), patch.object(installer, 'start', side_effect=start), \
-             patch.object(installer, 'run', side_effect=run):
-            with self.assertRaisesRegex(ValueError, 'injected'):
-                installer.upgrade(self.compose, self.directory, self.path, config)
-        self.assertEqual(installer.service_image(self.compose), before_image)
-        self.assertEqual(installer.service_version(self.compose), before_version)
-        self.assertEqual(self.sql('SELECT MAX(version) FROM schema_migrations'), before_schema)
-        self.assertEqual(self.sql("SELECT value FROM settings WHERE key='rollback_marker'"), 'before')
-        self.assertEqual(key_hash(), before_key)
-
     def test_sqlite_migration_resumes_after_committed_copy(self):
         config = self.install('sqlite')
         original_run = installer.run

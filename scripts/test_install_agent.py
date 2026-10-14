@@ -27,9 +27,13 @@ class InstallerTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 1 if fail_health and 'exec' in command else 0)
         with patch.object(installer.sys, 'argv', argv), patch.object(installer.platform, 'system', return_value='Linux'), \
              patch.object(installer.subprocess, 'run', side_effect=run), patch.object(installer, 'available_ports'), \
-             patch.object(installer, 'setup_nginx') as setup, patch.object(installer.os, 'geteuid', return_value=0), patch.object(installer.time, 'sleep'), contextlib.redirect_stdout(io.StringIO()):
+             patch.object(installer, 'setup_nginx') as setup, patch.object(installer, 'shared_upgrade') as shared, patch.object(installer.os, 'geteuid', return_value=0), patch.object(installer.time, 'sleep'), contextlib.redirect_stdout(io.StringIO()):
             installer.main()
-            setup.assert_called_once()
+            if shared.called:
+                setup.assert_not_called()
+                shared.assert_called_once_with(Path(directory).resolve(), 'agent', [])
+            else:
+                setup.assert_called_once()
         return calls
 
     def test_install_and_reuse_identity(self):

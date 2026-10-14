@@ -3,8 +3,28 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+publish_started=$(date +%s)
+run_stage() {
+  local stage=$1 started
+  shift
+  started=$(date +%s)
+  echo "Starting: $stage"
+  "$@"
+  echo "$stage: $(( $(date +%s) - started ))s"
+}
+frontend_checks() {
+  npm --prefix web ci
+  npm --prefix web test
+  npm --prefix web run build
+}
+
 mode=${1:---check}
 tag=${2:-}
+postgres_mode=${EMBYRELAY_POSTGRES_TEST_MODE:-focused}
+case "$postgres_mode" in
+  focused|full) ;;
+  *) echo 'EMBYRELAY_POSTGRES_TEST_MODE must be focused or full.' >&2; exit 2 ;;
+esac
 case "$mode" in
   --check|--build-only) ;;
   --publish)
@@ -54,12 +74,11 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ "$mode" != --build-only ]]; then
-  bash -n scripts/install.sh scripts/install-agent.sh scripts/publish-server.sh
-  python3 -m unittest discover -s scripts -p 'test_*.py'
-  npm --prefix web ci
-  npm --prefix web test
-  npm --prefix web run build
-  go test -mod=readonly -race ./...
+  bash -n scripts/install.sh scripts/install-agent.sh scripts/upgrade.sh scripts/publish-server.sh scripts/test-postgres.sh
+  run_stage 'Python regression' python3 -m unittest discover -s scripts -p 'test_*.py'
+  run_stage 'Frontend tests and build' frontend_checks
+  # Always test SQLite here, even if the calling shell has a PostgreSQL DSN.
+  run_stage 'Full SQLite/Go race regression' env -u EMBYRELAY_TEST_POSTGRES_URL go test -mod=readonly -race ./...
   docker run -d --name "$postgres" -e POSTGRES_PASSWORD=release-test-only \
     -e POSTGRES_DB=embyrelay_test -p 127.0.0.1::5432 postgres:17-alpine >/dev/null
   ready=false
@@ -69,9 +88,10 @@ if [[ "$mode" != --build-only ]]; then
   done
   [[ "$ready" == true ]] || { docker logs "$postgres"; exit 1; }
   port=$(docker port "$postgres" 5432/tcp | sed 's/.*://')
-  EMBYRELAY_TEST_POSTGRES_URL="postgres://postgres:release-test-only@127.0.0.1:$port/embyrelay_test?sslmode=disable" \
-    go test -mod=readonly -race ./internal/control ./internal/database ./migrations
-  go vet ./...
+  run_stage 'PostgreSQL database regression' env \
+    EMBYRELAY_TEST_POSTGRES_URL="postgres://postgres:release-test-only@127.0.0.1:$port/embyrelay_test?sslmode=disable" \
+    bash scripts/test-postgres.sh "--$postgres_mode"
+  run_stage 'Go vet' go vet ./...
   git diff --check
 fi
 
@@ -108,3 +128,5 @@ if [[ "$mode" == --publish ]]; then
 else
   echo 'Build and startup checks passed. No image pushed.'
 fi
+
+echo "Total server validation/build/publish: $(( $(date +%s) - publish_started ))s"

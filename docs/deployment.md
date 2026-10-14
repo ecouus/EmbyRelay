@@ -72,12 +72,11 @@ Agent 本机健康检查成功后，脚本清空配置中的令牌并重建 Agen
 ```bash
 cd /opt/embyrelay-agent
 docker compose logs --tail=100 -f
-# 更新时保留原配置和数据
-docker compose pull
-docker compose up -d --force-recreate
+# 控制端与 Agent 共用的备份、升级和回滚入口
+sudo bash /你保存脚本的位置/embyrelay-upgrade.sh --directory "$PWD"
 ```
 
-重复运行脚本也可更新。自定义部署目录使用 `--directory /你的路径`，之后重跑保持同一路径。只在 B 部署一套 Agent，默认 Compose 项目名固定为 `embyrelay-agent`。
+已注册的 Agent 重跑新版安装脚本会调用公共升级器。自定义部署目录使用 `--directory /你的路径`，之后重跑保持同一路径。只在 B 部署一套 Agent，默认 Compose 项目名固定为 `embyrelay-agent`。
 
 ### 手动部署
 
@@ -154,3 +153,23 @@ flowchart LR
 ### 旧版容器反代 Agent 迁移
 
 脚本检测到旧版容器反代配置时会停止，避免直接改写正在运行的部署。先备份部署目录并记录 Compose 项目名和数据卷；停止旧反代容器释放 80/443（不要执行 `down -v`），将其服务从 Compose 移除，保留数据卷。Agent 设置 `network_mode: host`，删除 `ports`，监听并信任 `127.0.0.1`；安装宿主机 Nginx + Certbot，按 README 模板配置节点域名。验证 HTTPS 与节点在线后，再使用 Docker Compose 更新。对本脚本生成的 JSON 配置，将 `x-embyrelay-installer` 更新为 `version: 2`、`mode: nginx`，之后可重新运行脚本自动检查反代与续签。迁移期间入口会短暂中断。
+
+## 控制端与 Agent 的统一升级
+
+两端使用同一条命令，自动发现本机 Compose 实例，不包含任何私人主机信息：
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://raw.githubusercontent.com/ecouus/EmbyRelay/main/scripts/upgrade.sh -o embyrelay-upgrade.sh && sudo bash embyrelay-upgrade.sh
+```
+
+默认查找最新正式版本，不依赖 GitHub Release。指定目录、版本或多实例：
+
+```bash
+sudo bash embyrelay-upgrade.sh --directory /srv/media-relay --version 1.0.21 --yes
+sudo bash embyrelay-upgrade.sh --instance media-project/node --yes
+sudo bash embyrelay-upgrade.sh --file /srv/media-relay/compose.yml --file /srv/media-relay/production.yml --instance media-project/panel --yes
+```
+
+原安装器的 upgrade 子命令保持兼容并调用同一事务。升级只重建选中应用；不会重建数据库/反代、改变项目或数据卷、重置账号或重新注册节点。控制端升级后再升级 Agent，并确认心跳/配置同步；本机健康不代表控制端已同步。
+
+支持 Linux 本机 Compose、标准控制端/Agent 入口、SQLite，以及同项目专用 PostgreSQL 17。外部或共享 PostgreSQL、自定义入口、include/extends 和多副本等安全退出。具体前提、已验证平台、版本选择、HTTPS 入口与失败恢复见 [通用升级手册](upgrading.md)。本次入口随代码同步后可下载；开发检出可直接 `sudo bash scripts/upgrade.sh`。

@@ -2,15 +2,42 @@
 
 ## 自动化测试
 
-在项目根目录运行：
+日常开发按修改范围验证；已经准备发布时，由 `bash scripts/publish-server.sh --check`（验证不推送）或 `--publish vX.Y.Z` 统一执行发布检查，避免紧接着重复执行手动完整回归。
 
 ```sh
-go test -race ./...
-go vet ./...
-npm --prefix web ci
+# 前端修改：测试与类型检查/构建
+npm --prefix web test
 npm --prefix web run build
+
+# 后端修改：运行相关用例；按实际修改替换测试正则
+# Go 程序嵌入 web/dist，首次运行前需先完成上面的前端构建
+go test -mod=readonly -race ./internal/control -run '^Test(PortalValidationFailurePreservesSource|UserSourcePolicyOnControlAndAgent)$'
+
+# 脚本修改：执行对应脚本测试与语法检查
+python3 -m unittest scripts.test_postgres_runner
+bash -n scripts/publish-server.sh scripts/test-postgres.sh
+```
+
+需要手动完整检查时，在项目根目录运行：
+
+```sh
+npm --prefix web ci
+npm --prefix web test
+npm --prefix web run build
+env -u EMBYRELAY_TEST_POSTGRES_URL go test -mod=readonly -race ./...
+go vet ./...
 python3 -m unittest discover -s scripts -p 'test_*.py'
-bash -n scripts/install.sh scripts/install-agent.sh
+bash -n scripts/install.sh scripts/install-agent.sh scripts/publish-server.sh scripts/test-postgres.sh
+```
+
+完整 SQLite/Go 回归覆盖所有测试；服务器发布和 GitHub CI 的第二阶段仅在真实 PostgreSQL 上运行数据库专项清单，避免再跑整套协议和播放器测试。清单涵盖迁移、复制、约束、持久化、配额、计量、退款和留存，见 [发布指南](publishing.md#开发验证与-postgresql-测试范围)。新增数据库测试时同步维护 `scripts/test-postgres.sh`；清单中的测试缺失会阻止验证通过。
+
+```sh
+# 必须先将 EMBYRELAY_TEST_POSTGRES_URL 设置为一次性测试数据库的地址
+bash scripts/test-postgres.sh
+
+# 数据库方言、SQL 适配、大范围 schema/存储修改还需完整 PostgreSQL 回归
+bash scripts/test-postgres.sh --full
 ```
 
 Go 测试使用本机 HTTP 测试服务与临时数据库。前端构建包含 Vue TypeScript 类型检查。
@@ -48,3 +75,15 @@ RELAY_URL='完整带密钥的媒体流地址' VUS=100 DURATION=10m k6 run tests/
 ```
 
 脚本使用固定请求名称并关闭 URL 系统标签，避免将访问密钥写入统计标签。测试结果取决于媒体源、服务器与网络配置。
+
+## 通用升级回归
+
+```sh
+python3 -m unittest scripts.test_upgrade scripts.test_install scripts.test_install_agent
+bash -n scripts/upgrade.sh scripts/install.sh scripts/install-agent.sh
+shellcheck scripts/upgrade.sh scripts/install.sh scripts/install-agent.sh
+# 仅使用临时 Compose 项目、测试数据库与已发布镜像，结束清理测试资源
+EMBYRELAY_DOCKER_TEST=1 python3 -m unittest scripts.test_upgrade_docker
+```
+
+覆盖真实 1.0.18 → 1.0.21 控制端/Agent 升级、失败回滚、SQLite/PostgreSQL schema、主密钥和真实注册身份保留、停止服务和容器缺失边界、多角色歧义。升级回滚生命周期由公共升级器测试负责；原数据库安装器集成测试保留手动备份恢复及数据库复制/迁移回归。

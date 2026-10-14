@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 command -v python3 >/dev/null || { echo '需要 Python 3：apt-get update && apt-get install -y python3' >&2; exit 1; }
+export EMBYRELAY_INSTALLER_DIRECTORY
+EMBYRELAY_INSTALLER_DIRECTORY=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 exec python3 - "$@" <<'PY'
 import argparse
 import hashlib
@@ -17,6 +19,8 @@ import socket
 import subprocess
 import sys
 import time
+import tempfile
+import urllib.request
 from urllib.parse import urlsplit
 
 
@@ -291,8 +295,29 @@ def setup_nginx(compose, directory, path, config):
         hook.chmod(0o700)
 
 
+def shared_upgrade(directory, role, options=None):
+    script = Path(os.environ.get('EMBYRELAY_INSTALLER_DIRECTORY', '.')) / 'upgrade.py'
+    temporary = None
+    if not script.is_file():
+        temporary = Path(tempfile.mkdtemp(prefix='embyrelay-upgrade-', dir='/var/tmp'))
+        script = temporary / 'upgrade.py'
+        try:
+            with urllib.request.urlopen('https://raw.githubusercontent.com/ecouus/EmbyRelay/main/scripts/upgrade.py', timeout=30) as response:
+                write_private(script, response.read().decode())
+        except Exception:
+            raise ValueError('公共升级器下载失败；已有部署未修改')
+    result = subprocess.run(['python3', str(script), '--directory', str(directory), '--role', role] + (options or []))
+    if result.returncode:
+        raise ValueError('公共升级器未通过；请查看其错误和保留的恢复命令')
+    if temporary:
+        shutil.rmtree(temporary)
+
+
 def main():
     parser = argparse.ArgumentParser(prog='install-agent.sh', description='EmbyRelay Agent 部署（Debian / Ubuntu，需 Docker Compose v2）')
+    parser.add_argument('action', nargs='?', choices=['install', 'upgrade'], default='install')
+    parser.add_argument('--version', help='upgrade 目标版本')
+    parser.add_argument('--yes', action='store_true', help='upgrade 非交互确认')
     parser.add_argument('--control-url')
     parser.add_argument('--server-key')
     parser.add_argument('--token')
@@ -309,6 +334,19 @@ def main():
             raise ValueError('需要可访问的 Docker Engine 和 Compose v2，请先安装并启动 Docker：https://docs.docker.com/engine/install/')
     os.umask(0o077)
     directory = Path(args.directory).resolve()
+    existing_path = directory / 'docker-compose.yml'
+    existing_registered = False
+    if existing_path.is_file():
+        try:
+            existing = json.loads(existing_path.read_text())
+            existing_registered = (existing.get('x-embyrelay-installer', {}).get('version') in (1, 2) and
+                'agent' in existing.get('services', {}) and not existing['services']['agent'].get('environment', {}).get('RELAY_ENROLL_TOKEN'))
+        except (ValueError, KeyError, TypeError):
+            pass
+    if args.action == 'upgrade' or existing_registered:
+        options = (['--version', args.version] if args.version else []) + (['--yes'] if args.yes else [])
+        shared_upgrade(directory, 'agent', options)
+        return
     directory.mkdir(parents=True, exist_ok=True)
     with open(directory / '.install.lock', 'w') as lock:
         try:
