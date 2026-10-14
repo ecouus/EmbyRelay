@@ -79,11 +79,18 @@ docker compose -f deploy/docker-compose.yml pull
 docker compose -f deploy/docker-compose.yml up -d --no-build
 ```
 
-当前发布版本为 `1.0.22`，`latest` 指向该版本，目标架构为 AMD64/ARM64。HTTPS 和 Agent 使用同一镜像，参照 deployment.md 的配置文件。
+当前发布版本为 `1.0.23`，`latest` 指向该版本，目标架构为 AMD64/ARM64。HTTPS 和 Agent 使用同一镜像，参照 deployment.md 的配置文件。
 
 ## 构建上下文
 
 源代码仓库不包含数据库、master.key、Agent 身份、.env、node_modules、本机构建二进制或临时验收截图（README 展示图片保存在 docs/ 并随仓库提交）。前端 dist 在验证/Docker 构建时生成；本地交接文档 CLAUDE.md 同时被 Git 和 Docker 构建上下文忽略。
+
+## 1.0.23 更新
+
+- 修复用户自助添加/编辑真实 Emby 源站时，公开信息接口偶发返回 403/404/5xx 导致保存失败。普通账号真实登录仍必需，随后通过公开服务器信息或 Token 查询当前用户验证；两个只读接口都不可用、账号错误、Token 被拒绝、用户或服务器身份不一致时继续拒绝保存。
+- 错误提示标明失败接口，增加公开信息接口 HTTP 500、当前用户接口异常、错误账号和双接口异常回归。无数据库迁移，schema 仍为 15。
+
+升级控制端即可修复源站保存验证；Agent 无需因本次验证逻辑调整单独升级。现有转发路径限制保持不变。
 
 ## 1.0.22 更新
 

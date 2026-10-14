@@ -34,7 +34,7 @@ func verifyEmbySource(ctx context.Context, u Upstream, credentials embyCredentia
 		return fmt.Errorf("源站地址无效")
 	}
 	identity := DeviceFields{ID: "embyrelay-verify-" + ID(), Name: "EmbyRelay source validation", Client: "EmbyRelay", Version: "1"}
-	request := func(method, path, token string, payload any, result any) error {
+	request := func(method, path, token string, payload any, result any, optional bool) (bool, error) {
 		target := *base
 		target.Path = strings.TrimRight(base.Path, "/") + path
 		target.RawPath = ""
@@ -44,7 +44,7 @@ func verifyEmbySource(ctx context.Context, u Upstream, credentials embyCredentia
 		}
 		req, err := http.NewRequestWithContext(ctx, method, target.String(), body)
 		if err != nil {
-			return fmt.Errorf("Emby 验证请求无效")
+			return false, fmt.Errorf("Emby 验证请求无效")
 		}
 		req.Header.Set("Accept", "application/json")
 		req.Header.Set("Content-Type", "application/json")
@@ -54,30 +54,37 @@ func verifyEmbySource(ctx context.Context, u Upstream, credentials embyCredentia
 		}
 		resp, err := client.Do(req)
 		if err != nil {
-			return fmt.Errorf("无法连接 Emby 源站，请检查公网地址、证书和服务状态")
+			return false, fmt.Errorf("无法连接 Emby 源站，请检查公网地址、证书和服务状态")
 		}
 		defer resp.Body.Close()
+		// Some working Emby reverse proxies fail one read-only endpoint. Require
+		// login plus the other endpoint before accepting that response.
+		if optional && (resp.StatusCode == http.StatusNotFound || resp.StatusCode >= 500 ||
+			(path == "/System/Info/Public" && resp.StatusCode == http.StatusForbidden)) {
+			return false, nil
+		}
 		if resp.StatusCode == 401 || resp.StatusCode == 403 {
-			return fmt.Errorf("Emby 账号验证失败，请检查用户名、密码和账号权限")
+			return false, fmt.Errorf("Emby 账号验证失败，请检查用户名、密码和账号权限")
 		}
 		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("源站未通过 Emby 验证（HTTP %d）", resp.StatusCode)
+			return false, fmt.Errorf("源站 %s 接口未通过 Emby 验证（HTTP %d）", path, resp.StatusCode)
 		}
 		data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
 		if err != nil || len(data) > 1<<20 || json.Unmarshal(data, result) != nil {
-			return fmt.Errorf("源站返回无效的 Emby 响应")
+			return false, fmt.Errorf("源站返回无效的 Emby 响应")
 		}
-		return nil
+		return true, nil
 	}
 	var info struct {
 		ID         string `json:"Id"`
 		Version    string
 		ServerName string
 	}
-	if err := request("GET", "/System/Info/Public", "", nil, &info); err != nil {
+	infoAvailable, err := request("GET", "/System/Info/Public", "", nil, &info, true)
+	if err != nil {
 		return err
 	}
-	if info.ID == "" || info.Version == "" || info.ServerName == "" {
+	if infoAvailable && (info.ID == "" || info.Version == "" || info.ServerName == "") {
 		return fmt.Errorf("源站缺少 Emby 服务器信息")
 	}
 	var login struct {
@@ -88,7 +95,7 @@ func verifyEmbySource(ctx context.Context, u Upstream, credentials embyCredentia
 			Policy struct{ IsAdministrator bool }
 		}
 	}
-	if err := request("POST", "/Users/AuthenticateByName", "", map[string]string{"Username": credentials.Username, "Pw": credentials.Password}, &login); err != nil {
+	if _, err := request("POST", "/Users/AuthenticateByName", "", map[string]string{"Username": credentials.Username, "Pw": credentials.Password}, &login, false); err != nil {
 		return err
 	}
 	// Always revoke the temporary validation session, including failed token checks.
@@ -108,7 +115,7 @@ func verifyEmbySource(ctx context.Context, u Upstream, credentials embyCredentia
 			resp.Body.Close()
 		}
 	}()
-	if login.AccessToken == "" || login.User.ID == "" || (login.ServerID != "" && login.ServerID != info.ID) {
+	if login.AccessToken == "" || login.User.ID == "" || (infoAvailable && login.ServerID != "" && login.ServerID != info.ID) {
 		return fmt.Errorf("源站登录响应缺少有效的 Emby 会话或服务器信息不一致")
 	}
 	if login.User.Policy.IsAdministrator {
@@ -120,10 +127,15 @@ func verifyEmbySource(ctx context.Context, u Upstream, credentials embyCredentia
 		ServerID string `json:"ServerId"`
 		Policy   struct{ IsAdministrator bool }
 	}
-	if err := request("GET", "/Users/Me", login.AccessToken, nil, &user); err != nil {
+	userAvailable, err := request("GET", "/Users/Me", login.AccessToken, nil, &user, infoAvailable)
+	if err != nil {
 		return err
 	}
-	if user.ID != login.User.ID || (user.ServerID != "" && user.ServerID != info.ID) {
+	if !userAvailable {
+		return nil
+	}
+	if user.ID != login.User.ID || (infoAvailable && user.ServerID != "" && user.ServerID != info.ID) ||
+		(!infoAvailable && login.ServerID != "" && user.ServerID != "" && login.ServerID != user.ServerID) {
 		return fmt.Errorf("Emby Token 验证失败或用户信息不一致")
 	}
 	if user.Policy.IsAdministrator {

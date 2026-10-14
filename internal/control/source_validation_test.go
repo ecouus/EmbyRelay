@@ -13,7 +13,7 @@ import (
 
 func TestVerifyEmbySource(t *testing.T) {
 	for _, tc := range []struct{ name, failure string }{
-		{"valid", ""}, {"HTML", "html"}, {"fake info", "info"}, {"bad password", "password"}, {"missing token", "token"}, {"wrong server", "server"}, {"invalid token", "me"}, {"different user", "user"}, {"administrator", "admin"}, {"redirect", "redirect"}, {"oversized", "large"},
+		{"valid", ""}, {"public path unavailable", "public404"}, {"public path forbidden", "public403"}, {"public endpoint failed", "public500"}, {"user endpoint failed", "user500"}, {"both probes failed", "both500"}, {"public failed and bad password", "public500password"}, {"HTML", "html"}, {"fake info", "info"}, {"bad password", "password"}, {"missing token", "token"}, {"wrong server", "server"}, {"invalid token", "me"}, {"different user", "user"}, {"administrator", "admin"}, {"redirect", "redirect"}, {"oversized", "large"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var loggedOut atomic.Bool
@@ -22,6 +22,15 @@ func TestVerifyEmbySource(t *testing.T) {
 				switch r.URL.Path {
 				case "/emby/System/Info/Public":
 					switch tc.failure {
+					case "public404":
+						w.WriteHeader(404)
+						return
+					case "public403":
+						w.WriteHeader(403)
+						return
+					case "public500", "public500password", "both500":
+						w.WriteHeader(500)
+						return
 					case "html":
 						fmt.Fprint(w, "<html>Emby</html>")
 						return
@@ -43,7 +52,7 @@ func TestVerifyEmbySource(t *testing.T) {
 					if credentials["Username"] != "viewer" || credentials["Pw"] != "secret-password" || r.Header.Get("X-Emby-Authorization") == "" {
 						t.Error("incorrect login request")
 					}
-					if tc.failure == "password" {
+					if tc.failure == "password" || tc.failure == "public500password" {
 						w.WriteHeader(401)
 						return
 					}
@@ -56,6 +65,10 @@ func TestVerifyEmbySource(t *testing.T) {
 					}
 					writeJSON(w, 200, map[string]any{"AccessToken": token, "ServerId": serverID, "User": map[string]any{"Id": "viewer", "Policy": map[string]bool{"IsAdministrator": tc.failure == "admin"}}})
 				case "/emby/Users/Me":
+					if tc.failure == "user500" || tc.failure == "both500" {
+						w.WriteHeader(500)
+						return
+					}
 					if r.Header.Get("X-Emby-Token") != "secret-token" {
 						t.Error("token not sent")
 					}
@@ -79,13 +92,13 @@ func TestVerifyEmbySource(t *testing.T) {
 			defer server.Close()
 			u := Upstream{BaseURL: server.URL + "/emby", AllowedCIDRs: []string{"127.0.0.1/32"}}
 			err := verifyEmbySource(context.Background(), u, embyCredentials{Username: "viewer", Password: "secret-password"})
-			if (err != nil) != (tc.failure != "") {
+			if (err != nil) != (tc.failure != "" && tc.failure != "public404" && tc.failure != "public403" && tc.failure != "public500" && tc.failure != "user500") {
 				t.Fatalf("unexpected result: %v", err)
 			}
 			if err != nil && (strings.Contains(err.Error(), "secret-password") || strings.Contains(err.Error(), "secret-token")) {
 				t.Fatal("credentials exposed")
 			}
-			if (tc.failure == "" || tc.failure == "me" || tc.failure == "user") && !loggedOut.Load() {
+			if (tc.failure == "" || tc.failure == "me" || tc.failure == "user" || tc.failure == "user500" || tc.failure == "both500") && !loggedOut.Load() {
 				t.Error("validation session not revoked")
 			}
 			if (tc.failure == "html" || tc.failure == "info" || tc.failure == "redirect" || tc.failure == "large") && loginRequests.Load() != 0 {
