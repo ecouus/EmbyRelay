@@ -13,6 +13,7 @@ export EMBYRELAY_INSTALLER_DIRECTORY
 EMBYRELAY_INSTALLER_DIRECTORY=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 exec python3 - "$@" <<'PY'
 import argparse
+import contextlib
 import hashlib
 import shlex
 import fcntl
@@ -681,17 +682,65 @@ def shared_upgrade(directory, role, options=None):
                 write_private(script, response.read().decode())
         except Exception:
             raise ValueError('公共升级器下载失败；已有部署未修改')
-    result = subprocess.run(['python3', str(script), '--directory', str(directory), '--role', role] + (options or []))
-    if result.returncode:
-        raise ValueError('公共升级器未通过；请查看其错误和保留的恢复命令')
-    if temporary:
+    command = ['python3', str(script)]
+    if directory is not None:
+        command += ['--directory', str(directory)]
+    if role:
+        command += ['--role', role]
+    command += options or []
+    # The installer itself reads Python from stdin; give the upgrader a real TTY.
+    with contextlib.ExitStack() as stack:
+        tty = None
+        if os.isatty(1):
+            try:
+                tty = stack.enter_context(open('/dev/tty'))
+            except OSError:
+                pass
+        result = subprocess.run(command, stdin=tty)
+    if temporary and result.returncode in (0, 8):
         shutil.rmtree(temporary)
+    if result.returncode == 8 and '--detect-only' in (options or []):
+        return False
+    if result.returncode:
+        raise SystemExit(result.returncode)
+    return True
+
+
+def route_upgrade(args):
+    if args.action not in (None, 'upgrade'):
+        return False
+    directory = Path(args.directory).expanduser().resolve() if args.directory else None
+    options = (['--version', args.version] if args.version else []) + (['--yes'] if args.yes else [])
+    if args.instance:
+        options += ['--instance', args.instance]
+    if args.action is None:
+        if not shutil.which('docker'):
+            return False
+        # An unfinished first control install must keep its recovery path.
+        path = (directory or Path('/opt/embyrelay')) / 'docker-compose.yml'
+        if path.is_file():
+            try:
+                config = json.loads(path.read_text())
+            except (ValueError, OSError):
+                config = {}
+            if config.get('x-embyrelay-installer') and config.get('services', {}).get('embyrelay', {}).get('environment', {}).get('RELAY_ADMIN_PASSWORD'):
+                return False
+        if not shared_upgrade(directory, args.role, options + ['--detect-only']):
+            if args.instance or args.role or args.version:
+                raise ValueError('未发现所指定的已有部署；请核对目录、角色或实例，不会创建新部署')
+            return False
+    if args.database:
+        raise ValueError('已有部署升级保持原数据库类型；数据库迁移请使用 migrate-db')
+    shared_upgrade(directory, args.role, options)
+    return True
 
 
 def main():
-    parser = argparse.ArgumentParser(description='EmbyRelay 安装与管理（Linux root，默认 host 网络）')
+    parser = argparse.ArgumentParser(description='EmbyRelay 统一安装/升级入口：已有控制端或 Agent 自动识别；首次安装控制端（Linux root）')
     parser.add_argument('action', nargs='?', choices=['install', 'upgrade', 'backup', 'restore', 'migrate-db', 'password', 'uninstall', 'status', 'logs'])
-    parser.add_argument('--directory', default='/opt/embyrelay', help='部署目录，管理时使用相同路径')
+    parser.add_argument('--directory', help='已有部署自动发现；首次安装控制端默认 /opt/embyrelay')
+    parser.add_argument('--role', choices=['control', 'agent'], help='筛选升级角色')
+    parser.add_argument('--instance', help='筛选升级实例 PROJECT/SERVICE')
     parser.add_argument('--database', choices=['sqlite', 'postgres'], help='首次安装的数据库类型')
     parser.add_argument('--database-port', type=int, default=15432, help='PostgreSQL 本机端口（默认 15432）')
     parser.add_argument('--version', help='upgrade 目标版本')
@@ -701,6 +750,8 @@ def main():
     os.umask(0o077)
     if os.geteuid() != 0 or sys.platform != 'linux':
         raise ValueError('请在 Linux 服务器上以 root 运行')
+    if route_upgrade(args):
+        return
     with open('/var/lock/embyrelay-managed.lock', 'w') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -715,10 +766,10 @@ def main():
             action = {'1':'install', '2':'upgrade', '3':'password', '4':'uninstall', '5':'status', '6':'logs', '7':'backup', '8':'restore', '9':'migrate-db'}.get(selected)
             if not action:
                 raise ValueError('无效选项')
-        directory = Path(args.directory).expanduser().resolve()
+        directory = Path(args.directory or '/opt/embyrelay').expanduser().resolve()
         if action == 'upgrade':
             options = (['--version', args.version] if args.version else []) + (['--yes'] if args.yes else [])
-            shared_upgrade(directory, 'control', options)
+            shared_upgrade(Path(args.directory).resolve() if args.directory else None, args.role, options + (['--instance', args.instance] if args.instance else []))
             return
         path = directory / 'docker-compose.yml'
         config = load(path) if path.exists() else None

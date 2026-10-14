@@ -3,10 +3,10 @@
 控制端与 Agent 使用同一入口。无需 SSH 登录其他主机，也无需事先知道角色、容器名或镜像标签。每台主机分别执行；脚本只操作选中的本机实例。
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://raw.githubusercontent.com/ecouus/EmbyRelay/main/scripts/upgrade.sh -o embyrelay-upgrade.sh && sudo bash embyrelay-upgrade.sh
+curl -fL --retry 3 https://raw.githubusercontent.com/ecouus/EmbyRelay/main/scripts/install.sh -o embyrelay-install.sh && sudo bash embyrelay-install.sh
 ```
 
-仓库检出环境可直接执行 `sudo bash scripts/upgrade.sh`。单文件下载入口通过 HTTPS 获取同一仓库的公共 Python 实现；查询或下载失败会退出，不会报告“已经最新”。该入口不依赖 GitHub Release。
+仓库检出环境可直接执行 `sudo bash scripts/install.sh upgrade`。直接运行 `install.sh` 会先识别已有面板或 Agent，有部署进入公共升级事务，无部署才进入首次安装控制端菜单；未完成首次控制端安装保留恢复路径。多实例选择、识别错误均不会退回新安装。`install.sh upgrade` 强制仅升级，支持 `--directory`、`--role`、`--instance`、`--version` 和 `--yes`。高级参数及下文恢复示例继续使用兼容入口 `upgrade.sh`。单文件下载入口通过 HTTPS 获取同一仓库的公共 Python 实现；查询或下载失败会退出，不会报告“已经最新”。该入口不依赖 GitHub Release。
 
 ## 范围与运行要求
 
@@ -107,4 +107,4 @@ sudo bash scripts/install.sh upgrade --directory /srv/media-relay --version 1.0.
 sudo bash scripts/install-agent.sh upgrade --directory /srv/media-node --version 1.0.21 --yes
 ```
 
-两者调用同一公共升级事务。控制端重跑安装器时，已完成初始化且已清空初始密码的部署转入公共升级器；Agent 重跑安装器时，已完成注册且清空注册令牌的部署也转入公共升级入口；不再次注册已有节点。未完成首次安装仍沿用安装器的恢复流程。旧版脚本文件应重新下载/同步；已经下载在用户主机的历史脚本不会自动获得新实现。
+`install.sh` 是两种角色共用的升级入口，不加动作时自动发现已有实例；`install-agent.sh` 保留兼容入口，已完成注册且清空注册令牌的部署也转入公共升级事务，不再次注册已有节点。未完成首次安装仍沿用安装器的恢复流程。旧版脚本文件应重新下载/同步；已经下载在用户主机的历史脚本不会自动获得新实现。

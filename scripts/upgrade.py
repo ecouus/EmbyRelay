@@ -343,7 +343,7 @@ def original_files(files, project, service):
     return files
 
 
-def discover(docker, args):
+def discover(docker, args, allow_missing=False):
     containers = docker.containers()
     groups = {}
     instance = args.instance.split('/', 1) if args.instance else None
@@ -408,7 +408,11 @@ def discover(docker, args):
     if errors:
         fail('部署识别失败：' + '；'.join(errors), 2)
     if not deployments:
+        if allow_missing:
+            return None
         fail('未发现受支持的 Compose 部署，请指定 --directory 或 --file', 2)
+    if allow_missing:
+        return deployments[0]  # Presence probe only; actual selection happens in the upgrade call.
     if len(deployments) > 1:
         if args.yes or not sys.stdin.isatty():
             fail('发现多个部署；非交互模式必须指定 --instance PROJECT/SERVICE', 2)
@@ -895,6 +899,7 @@ def interrupted(signum, frame):
 
 def parser():
     p = argparse.ArgumentParser(description='EmbyRelay 通用升级：自动识别控制端/Agent，备份、验收与失败回滚。')
+    p.add_argument('--detect-only', action='store_true', help=argparse.SUPPRESS)
     p.add_argument('--directory', help='部署目录；默认从当前目录、安装入口和 Compose 容器发现')
     p.add_argument('--file', action='append', help='Compose 文件，可重复指定并保持原顺序')
     p.add_argument('--role', choices=['control', 'agent'])
@@ -942,7 +947,12 @@ def main(argv=None):
         if (dep.directory != Path(state['directory']) or dep.role != state['role'] or dep.db != state['database'] or dep.mount != state.get('mount')):
             fail('备份与当前部署不匹配', 2)
     else:
-        dep = discover(docker, args)
+        dep = discover(docker, args, allow_missing=args.detect_only)
+        if args.detect_only:
+            if dep is None:
+                fail('未发现已有部署', 8)
+            print('发现已有部署，将进入通用升级流程。')
+            return
     # Also coordinate with both original installers' directory locks.
     lock_path = dep.directory / '.install.lock'
     with lock_path.open('a') as lock:
@@ -967,7 +977,8 @@ if __name__ == '__main__':
     try:
         main()
     except UpgradeError as error:
-        print('升级失败：' + str(error), file=sys.stderr)
+        if error.code != 8:  # Internal presence check: absence is not an upgrade failure.
+            print('升级失败：' + str(error), file=sys.stderr)
         sys.exit(error.code)
     except (OSError, ValueError, KeyError, TypeError, sqlite3.DatabaseError):
         print('升级失败：配置、备份或系统状态无效；敏感内容未输出。请检查权限及保留的事务记录。', file=sys.stderr)

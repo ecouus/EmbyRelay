@@ -118,6 +118,9 @@ class DockerUpgradeTests(unittest.TestCase):
         self.assertIn('同版本', result.stdout)
         result = subprocess.run(['bash', str(Path(__file__).with_name('install.sh')), 'upgrade', '--directory', str(self.root), '--version', '1.0.21', '--yes'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+        result = subprocess.run(['bash', str(Path(__file__).with_name('install.sh')), '--directory', str(self.root), '--version', '1.0.21', '--yes'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('同版本', result.stdout)
 
     def test_control_sqlite_rollback(self):
         self.install();self.upgrade(failure=True)
@@ -164,6 +167,10 @@ class DockerUpgradeTests(unittest.TestCase):
         self.install_agent();self.upgrade('node')
         result = subprocess.run(['bash', str(Path(__file__).with_name('install-agent.sh')), 'upgrade', '--directory', str(self.root), '--version', '1.0.21', '--yes'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+        for action in ([], ['upgrade']):
+            result = subprocess.run(['bash', str(Path(__file__).with_name('install.sh'))] + action + ['--directory', str(self.root), '--instance', self.project + '/node', '--version', '1.0.21', '--yes'], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('同版本', result.stdout)
 
     def test_agent_rollback_preserves_registered_identity(self):
         self.install_agent();self.upgrade('node', failure=True)
@@ -223,6 +230,10 @@ class DockerUpgradeTests(unittest.TestCase):
         args = u.parser().parse_args(['--directory', str(self.root), '--yes'])
         with self.assertRaisesRegex(u.UpgradeError, '多个部署'):
             u.discover(self.docker, args)
+        result = subprocess.run(['bash', str(Path(__file__).with_name('install.sh')), '--directory', str(self.root), '--yes'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('多个部署', result.stderr)
+        self.assertNotIn('首次配置', result.stdout)
         args.role = 'agent'
         self.assertEqual(u.discover(self.docker, args).service, 'node')
 

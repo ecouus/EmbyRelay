@@ -159,7 +159,7 @@ flowchart LR
 两端使用同一条命令，自动发现本机 Compose 实例，不包含任何私人主机信息：
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://raw.githubusercontent.com/ecouus/EmbyRelay/main/scripts/upgrade.sh -o embyrelay-upgrade.sh && sudo bash embyrelay-upgrade.sh
+curl -fL --retry 3 https://raw.githubusercontent.com/ecouus/EmbyRelay/main/scripts/install.sh -o embyrelay-install.sh && sudo bash embyrelay-install.sh
 ```
 
 默认查找最新正式版本，不依赖 GitHub Release。指定目录、版本或多实例：
@@ -172,4 +172,4 @@ sudo bash embyrelay-upgrade.sh --file /srv/media-relay/compose.yml --file /srv/m
 
 原安装器的 upgrade 子命令保持兼容并调用同一事务。升级只重建选中应用；不会重建数据库/反代、改变项目或数据卷、重置账号或重新注册节点。控制端升级后再升级 Agent，并确认心跳/配置同步；本机健康不代表控制端已同步。
 
-支持 Linux 本机 Compose、标准控制端/Agent 入口、SQLite，以及同项目专用 PostgreSQL 17。外部或共享 PostgreSQL、自定义入口、include/extends 和多副本等安全退出。具体前提、已验证平台、版本选择、HTTPS 入口与失败恢复见 [通用升级手册](upgrading.md)。本次入口随代码同步后可下载；开发检出可直接 `sudo bash scripts/upgrade.sh`。
+支持 Linux 本机 Compose、标准控制端/Agent 入口、SQLite，以及同项目专用 PostgreSQL 17。外部或共享 PostgreSQL、自定义入口、include/extends 和多副本等安全退出。具体前提、已验证平台、版本选择、HTTPS 入口与失败恢复见 [通用升级手册](upgrading.md)。`install.sh` 自动识别已有控制端或 Agent 并升级；没有部署时进入首次安装控制端流程。开发检出可直接 `sudo bash scripts/install.sh upgrade`，`upgrade.sh` 保留兼容及高级参数入口。

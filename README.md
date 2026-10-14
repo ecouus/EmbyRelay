@@ -70,15 +70,15 @@ sudo bash embyrelay-install.sh logs        # 最近 100 行日志
 sudo bash embyrelay-install.sh uninstall   # 卸载；默认保留数据与证书
 ```
 
-可追加 `--directory /你的部署目录`；后续管理必须指定相同目录。脚本每台主机管理一个固定的 `embyrelay-managed` Compose 项目，不能借助不同目录部署多个实例，也不会接管已有手动部署或 Agent 项目。
+可追加 `--directory /你的部署目录`；后续管理必须指定相同目录。首次安装及密码、卸载等管理操作面向安装器生成的控制端项目；升级会自动识别已有控制端或 Agent，也支持受支持的手动 Compose 部署与多实例选择。
 
 **通用一键升级（控制端与 Agent 共用）：**
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSL --retry 3 https://raw.githubusercontent.com/ecouus/EmbyRelay/main/scripts/upgrade.sh -o embyrelay-upgrade.sh && sudo bash embyrelay-upgrade.sh
+curl -fL --retry 3 https://raw.githubusercontent.com/ecouus/EmbyRelay/main/scripts/install.sh -o embyrelay-install.sh && sudo bash embyrelay-install.sh
 ```
 
-自动识别 Compose 实例、发现最新正式镜像、备份、更新固定版本、验收并在失败时恢复旧镜像及匹配数据；不要求 GitHub Release 已创建。自定义目录用 `--directory`，指定版本用 `--version`，多实例用 `--instance PROJECT/SERVICE`。支持范围、PostgreSQL 边界与恢复命令见 [通用升级手册](docs/upgrading.md)。仓库检出环境可执行 `sudo bash scripts/upgrade.sh`。
+自动识别 Compose 实例、发现最新正式镜像、备份、更新固定版本、验收并在失败时恢复旧镜像及匹配数据；不要求 GitHub Release 已创建。自定义目录用 `--directory`，指定版本用 `--version`，多实例用 `--instance PROJECT/SERVICE`。支持范围、PostgreSQL 边界与恢复命令见 [通用升级手册](docs/upgrading.md)。直接运行同一个 `install.sh`，已有部署自动进入升级；没有部署进入首次安装控制端流程。仓库检出可执行 `sudo bash scripts/install.sh upgrade`。`upgrade.sh` 保留为仅升级及高级恢复入口。
 
 **升级与数据保留：**
 

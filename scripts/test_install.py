@@ -293,5 +293,69 @@ class MainInstallerTests(unittest.TestCase):
             shared.assert_called_once_with(Path('/custom'), 'control', ['--version', '1.0.21', '--yes'])
 
 
+    def route_args(self, **values):
+        defaults = dict(action=None, directory=None, version=None, yes=False, role=None, instance=None, database=None)
+        defaults.update(values)
+        return installer.argparse.Namespace(**defaults)
+
+    def test_default_entry_discovers_both_roles_without_directory_constraint(self):
+        with patch.object(installer.shutil, 'which', return_value='/usr/bin/docker'), patch.object(Path, 'is_file', return_value=False), patch.object(installer, 'shared_upgrade', return_value=True) as shared:
+            self.assertTrue(installer.route_upgrade(self.route_args()))
+            self.assertEqual(shared.call_args_list[0].args, (None, None, ['--detect-only']))
+            self.assertEqual(shared.call_args_list[1].args, (None, None, []))
+
+    def test_default_entry_fresh_host_keeps_installation(self):
+        with patch.object(installer.shutil, 'which', return_value=None), patch.object(installer, 'shared_upgrade') as shared:
+            self.assertFalse(installer.route_upgrade(self.route_args()))
+            shared.assert_not_called()
+        with patch.object(installer.shutil, 'which', return_value='/usr/bin/docker'), patch.object(Path, 'is_file', return_value=False), patch.object(installer, 'shared_upgrade', return_value=False) as shared:
+            self.assertFalse(installer.route_upgrade(self.route_args()))
+            self.assertEqual(shared.call_count, 1)
+
+    def test_explicit_upgrade_preserves_instance_and_agent_role(self):
+        with patch.object(installer, 'shared_upgrade') as shared:
+            self.assertTrue(installer.route_upgrade(self.route_args(action='upgrade', directory='/srv/node', role='agent', instance='custom/node', version='1.0.21', yes=True)))
+            shared.assert_called_once_with(Path('/srv/node'), 'agent', ['--version', '1.0.21', '--yes', '--instance', 'custom/node'])
+
+    def test_missing_selected_instance_does_not_install(self):
+        with patch.object(installer.shutil, 'which', return_value='/usr/bin/docker'), patch.object(Path, 'is_file', return_value=False), patch.object(installer, 'shared_upgrade', return_value=False):
+            with self.assertRaisesRegex(ValueError, '不会创建新部署'):
+                installer.route_upgrade(self.route_args(instance='missing/node'))
+
+    def test_unfinished_control_install_keeps_recovery_flow(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'docker-compose.yml'
+            installer.save(path, self.config())
+            with patch.object(installer.shutil, 'which', return_value='/usr/bin/docker'), patch.object(installer, 'shared_upgrade') as shared:
+                self.assertFalse(installer.route_upgrade(self.route_args(directory=temp)))
+                shared.assert_not_called()
+
+    def test_detection_errors_never_fall_back_to_installation(self):
+        with patch.object(installer.shutil, 'which', return_value='/usr/bin/docker'), patch.object(Path, 'is_file', return_value=False), patch.object(installer, 'shared_upgrade', side_effect=SystemExit(3)):
+            with self.assertRaises(SystemExit) as caught:
+                installer.route_upgrade(self.route_args())
+            self.assertEqual(caught.exception.code, 3)
+
+    def test_shared_entry_passes_terminal_to_interactive_upgrader(self):
+        script_dir = str(Path(__file__).resolve().parent)
+        tty = io.StringIO()
+        with patch.dict(installer.os.environ, EMBYRELAY_INSTALLER_DIRECTORY=script_dir), patch.object(installer.os, 'isatty', return_value=True), patch('builtins.open', return_value=tty), patch.object(installer.subprocess, 'run') as run:
+            run.return_value.returncode = 0
+            self.assertTrue(installer.shared_upgrade(None, None, []))
+            self.assertIs(run.call_args.kwargs['stdin'], tty)
+
+    def test_shared_entry_preserves_exit_code_and_absence_result(self):
+        script_dir = str(Path(__file__).resolve().parent)
+        with patch.dict(installer.os.environ, EMBYRELAY_INSTALLER_DIRECTORY=script_dir), patch.object(installer.os, 'isatty', return_value=False), patch.object(installer.subprocess, 'run') as run:
+            run.return_value.returncode = 8
+            self.assertFalse(installer.shared_upgrade(None, None, ['--detect-only']))
+            self.assertNotIn('--role', run.call_args.args[0])
+            self.assertNotIn('--directory', run.call_args.args[0])
+            run.return_value.returncode = 7
+            with self.assertRaises(SystemExit) as caught:
+                installer.shared_upgrade(None, None, [])
+            self.assertEqual(caught.exception.code, 7)
+
+
 if __name__ == '__main__':
     unittest.main()
