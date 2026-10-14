@@ -5,31 +5,48 @@
 
 Docker 仓库名称必须小写。支持 linux/amd64（常见 Debian/Ubuntu VPS）和 linux/arm64。
 
-## 一次性设置
+## 默认发布：开发服务器
 
-在 GitHub 仓库 Settings → Secrets and variables → Actions 添加：
+镜像由开发服务器构建并直接推送 Docker Hub；推送 GitHub 版本标签不再自动构建或发布镜像。GitHub main / PR 仍运行代码验证，容器启动验收移到服务器发布脚本。GitHub 手动发布工作流保留作为备用入口。
 
-- `DOCKERHUB_USERNAME`：具有目标仓库推送权限的 Docker Hub 用户名。
-- `DOCKERHUB_TOKEN`：Docker Hub 生成的访问令牌，需具备目标镜像写入权限。
-
-令牌存入 GitHub Secrets；Docker Hub 推送目标为 `ecouus/embyrelay`。
-
-## 发布版本
+开发服务器需要 Go 1.25.x、兼容项目的 Node.js/npm、Python 3、Git、Docker Engine、Compose 和 Buildx，以及对 `ecouus/embyrelay` 有推送权限的 Docker Hub 登录。持久构建器 `embyrelay-builder` 保存构建层和 Go 编译缓存，不要在每次发布后清理它。服务器默认使用支持多架构加载的 Docker containerd 镜像存储；旧版 Docker 如不支持需先升级。
 
 ```sh
-git tag v1.0.20
-git push origin v1.0.20
+# 在开发服务器执行；Password 提示输入 Read & Write 的 Docker Hub Token
+# 凭据不会随 Git 仓库同步
+docker login --username ecouus
+
+# 完整发布前验证：SQLite/PostgreSQL、前端和双架构镜像启动；不推送
+bash scripts/publish-server.sh --check
+
+# 仅镜像构建和启动验收，用于测速；不替代发布前完整验证
+bash scripts/publish-server.sh --build-only
 ```
+
+## 发布新版本
+
+先更新 `internal/version/version.go` 和发布说明，完成提交；以下 `vX.Y.Z` 必须替换为实际新版本。脚本要求工作区干净、HEAD 等于标签提交、GitHub 上对应标签已同步、源码版本一致，并拒绝覆盖已存在的版本镜像。
+
+```sh
+git push origin main
+git tag vX.Y.Z
+git push origin vX.Y.Z
+bash scripts/publish-server.sh --publish vX.Y.Z
+```
+
+脚本先运行验证，再构建 linux/amd64 和 linux/arm64 镜像并检查本机容器健康，然后通过缓存构建推送镜像，最后显示远程 manifest。正式版本更新 `X.Y.Z`、`X.Y`、`latest`，预发布只推送完整预发布版本。验证失败不发布镜像。GitHub Release 更新描述和 A/B 生产升级仍分别执行。
 
 ```mermaid
 flowchart LR
-    A[推送版本标签] --> B[测试与前端构建]
-    B --> C[构建 AMD64 和 ARM64 镜像]
-    C --> D[推送 Docker Hub]
-    D --> E[服务器拉取并重建容器]
+    A[提交代码与版本标签到 GitHub] --> B[开发服务器测试]
+    B --> C[服务器双架构构建与容器验收]
+    C --> D[服务器推送 Docker Hub]
+    D --> E[备份并依次升级 A 和 B]
 ```
 
-正式标签 `v1.0.20` 对应 `1.0.20`、`1.0`、`latest`；预发布不更新 `latest`。手动运行工作流时选择版本标签。
+## GitHub 手动发布备用入口
+
+`.github/workflows/docker-publish.yml` 仅允许手动触发，必须选择已有版本标签。备用方式需要仓库 Actions Secrets：`DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`。同一版本只选择一条发布路径，不要同时执行服务器发布和 GitHub 备用发布。
 
 ## Debian / Ubuntu 拉取部署
 
@@ -40,18 +57,11 @@ docker compose -f deploy/docker-compose.yml pull
 docker compose -f deploy/docker-compose.yml up -d --no-build
 ```
 
-本次发布版本为 `1.0.20`，同时更新 `latest`，目标架构为 AMD64/ARM64。HTTPS 和 Agent 使用同一镜像，参照 deployment.md 的配置文件。
+当前已发布版本为 `1.0.20`，`latest` 指向该版本，目标架构为 AMD64/ARM64。HTTPS 和 Agent 使用同一镜像，参照 deployment.md 的配置文件。
 
-## 本机手动推送（可选）
+## 构建上下文
 
-```sh
-# 已登录 Docker Hub 时无需重复 docker login
-docker buildx build --platform linux/amd64,linux/arm64 \
-  -f deploy/Dockerfile \
-  -t ecouus/embyrelay:1.0.20 -t ecouus/embyrelay:1.0 -t ecouus/embyrelay:latest --push .
-```
-
-源代码仓库不包含数据库、master.key、Agent 身份、.env、node_modules、本机构建二进制或临时验收截图（README 展示图片保存在 docs/ 并随仓库提交）。前端 dist 在 CI/Docker 构建时生成。
+源代码仓库不包含数据库、master.key、Agent 身份、.env、node_modules、本机构建二进制或临时验收截图（README 展示图片保存在 docs/ 并随仓库提交）。前端 dist 在验证/Docker 构建时生成；本地交接文档 CLAUDE.md 同时被 Git 和 Docker 构建上下文忽略。
 
 ## 1.0.20 更新
 

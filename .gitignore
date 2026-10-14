@@ -20,3 +20,6 @@ web/dist/
 identity.json
 
 __pycache__/
+
+# 本地服务器迁移与运维交接文档
+/CLAUDE.md

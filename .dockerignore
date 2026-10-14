@@ -8,3 +8,9 @@ bin
 artifacts
 coverage.out
 web/dist
+CLAUDE.md
+LOCAL_HANDOFF.md
+/server
+/agent
+/dbmigrate
+**/__pycache__
