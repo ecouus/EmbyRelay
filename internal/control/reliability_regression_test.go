@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"embyrelay/internal/proxy"
+	"embyrelay/migrations"
 )
 
 func TestUntrustedPlaybackDocumentsAreSandboxed(t *testing.T) {
@@ -196,30 +196,23 @@ func TestCreditSurvivesProcessKill(t *testing.T) {
 	}
 }
 
-func TestSameNameSubscriptionHasExplicitLogin(t *testing.T) {
+func TestGlobalLoginNames(t *testing.T) {
 	a, admin, c, _ := subscriptionFixture(t)
-	r := call(t, a, admin, "POST", "/api/v1/access-accounts", map[string]any{"route_id": c.RouteID, "plan_id": c.PlanID, "username": "admin", "password": "viewer-password", "start_mode": "first_login"})
-	if r.Code != 201 {
-		t.Fatalf("create %d %s", r.Code, r.Body.String())
+	for _, name := range []string{"admin", "ADMIN"} {
+		r := call(t, a, admin, "POST", "/api/v1/access-accounts", map[string]any{"route_id": c.RouteID, "plan_id": c.PlanID, "username": name, "password": "viewer-password", "start_mode": "first_login"})
+		if r.Code < 400 {
+			t.Fatalf("duplicate accepted: %d %s", r.Code, r.Body.String())
+		}
 	}
-	for _, entry := range []struct{ path, password, role string }{{"auth/login", "test-password-123", "admin"}, {"portal/login", "viewer-password", "subscriber"}} {
-		r = call(t, a, nil, "POST", "/api/v1/"+entry.path, map[string]string{"username": "admin", "password": entry.password})
+	r := call(t, a, admin, "POST", "/api/v1/users", map[string]string{"username": "VIEWER", "password": "operator-password", "role": "operator"})
+	if r.Code < 400 {
+		t.Fatal("subscriber collision accepted")
+	}
+	for _, name := range []string{"viewer", "VIEWER"} {
+		r = call(t, a, nil, "POST", "/api/v1/auth/login", map[string]string{"username": name, "password": "viewer-password"})
 		if r.Code != 200 {
-			t.Fatalf("%s %d %s", entry.path, r.Code, r.Body.String())
+			t.Fatal(r.Code, r.Body.String())
 		}
-		var result map[string]any
-		json.Unmarshal(r.Body.Bytes(), &result)
-		if result["role"] != entry.role {
-			t.Fatal(result)
-		}
-	}
-	// A subsequently created management identity must not steal explicit portal login.
-	r = call(t, a, admin, "POST", "/api/v1/users", map[string]string{"username": "viewer", "password": "operator-password", "role": "operator"})
-	if r.Code != 200 {
-		t.Fatalf("management creation %d %s", r.Code, r.Body.String())
-	}
-	if r = call(t, a, nil, "POST", "/api/v1/portal/login", map[string]string{"username": "viewer", "password": "viewer-password"}); r.Code != 200 {
-		t.Fatal(r.Code, r.Body.String())
 	}
 }
 
@@ -418,5 +411,49 @@ func TestConcurrentPacingSharesAccountBudget(t *testing.T) {
 	}
 	if immediate != 1 {
 		t.Fatalf("independent connections bypassed shared account rate: %d permits", immediate)
+	}
+}
+
+func removeLoginNamesMigration(t *testing.T, s *Store) {
+	t.Helper()
+	for _, table := range []string{"users", "objects"} {
+		queries := []string{"DROP TRIGGER login_" + table + "_insert", "DROP TRIGGER login_" + table + "_update", "DROP TRIGGER login_" + table + "_delete"}
+		if s.DB.Driver == "postgres" {
+			queries = []string{"DROP TRIGGER login_" + table + "_sync ON " + table, "DROP FUNCTION login_" + table + "_sync()"}
+		}
+		for _, q := range queries {
+			if _, err := s.DB.Exec(q); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := s.DB.Exec("DROP TABLE login_names"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHistoricalLoginCollisionStopsMigration(t *testing.T) {
+	a, _, c, _ := subscriptionFixture(t)
+	removeLoginNamesMigration(t, a.Store)
+	if _, err := a.Store.DB.Exec("DELETE FROM schema_migrations WHERE version=15"); err != nil {
+		t.Fatal(err)
+	}
+	c.Username = "ADMIN"
+	if err := a.Store.put("access_account", c.ID, c, "test"); err != nil {
+		t.Fatal(err)
+	}
+	apply := migrations.Apply
+	if a.Store.DB.Driver == "postgres" {
+		apply = migrations.ApplyPostgres
+	}
+	if err := apply(a.Store.DB.DB); err == nil || !strings.Contains(err.Error(), "conflicting login usernames") {
+		t.Fatal(err)
+	}
+	c.Username = "viewer"
+	if err := a.Store.put("access_account", c.ID, c, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := apply(a.Store.DB.DB); err != nil {
+		t.Fatal(err)
 	}
 }

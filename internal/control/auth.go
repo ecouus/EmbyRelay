@@ -210,7 +210,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var u User
-	e := a.Store.DB.QueryRow("SELECT id,username,role,password_hash,totp FROM users WHERE username=?", in.Username).Scan(&u.ID, &u.Username, &u.Role, &u.PasswordHash, &u.TOTP)
+	e := a.Store.DB.QueryRow("SELECT id,username,role,password_hash,totp FROM users WHERE lower(username)=lower(?)", in.Username).Scan(&u.ID, &u.Username, &u.Role, &u.PasswordHash, &u.TOTP)
 	if e == sql.ErrNoRows {
 		a.portalLogin(w, r, in.Username, in.Password)
 		return

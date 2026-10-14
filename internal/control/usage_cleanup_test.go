@@ -236,6 +236,7 @@ func TestUsageRetentionSchemaUpgrade(t *testing.T) {
 	}
 	defer store.Close()
 	// Restore the shape of schema 11 inside this disposable test database.
+	removeLoginNamesMigration(t, store)
 	for _, query := range []string{
 		"DROP TABLE stream_reservations",
 		"ALTER TABLE access_leases DROP COLUMN paced",

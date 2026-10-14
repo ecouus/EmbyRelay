@@ -1,7 +1,3 @@
-export function loginPath(identity: string) {
-  return identity === "subscriber" ? "portal/login" : "auth/login"
-}
-
 export const AUTH_EXPIRED_EVENT = "embyrelay-auth-expired"
 
 export async function parseApiJSON(response: Response): Promise<any> {

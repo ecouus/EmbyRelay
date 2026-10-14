@@ -76,7 +76,7 @@ class DockerDatabaseTests(unittest.TestCase):
 
     def test_postgres_backup_restore_and_password_reset(self):
         config = self.install('postgres')
-        self.assertEqual(self.sql('SELECT MAX(version) FROM schema_migrations'), '14')
+        self.assertEqual(self.sql('SELECT MAX(version) FROM schema_migrations'), '15')
         self.sql("INSERT INTO settings VALUES('integration_marker','before')")
         installer.backup(self.compose, self.directory, config)
         backup = next((self.directory / 'backups').glob('*.tar.gz'))
@@ -109,7 +109,7 @@ class DockerDatabaseTests(unittest.TestCase):
             original_start(*args)
             self.assertNotEqual(installer.service_image(self.compose), before_image)
             self.assertNotEqual(installer.service_version(self.compose), before_version)
-            self.assertEqual(self.sql('SELECT MAX(version) FROM schema_migrations'), '14')
+            self.assertEqual(self.sql('SELECT MAX(version) FROM schema_migrations'), '15')
             self.sql("UPDATE settings SET value='after' WHERE key='rollback_marker'")
             raise ValueError('injected post-upgrade health failure')
         def run(command, **kwargs):

@@ -62,6 +62,7 @@ func TestDeletedRouteDetachesAccountAndPreservesUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Recreate schema 12 with a legacy dangling assignment.
+	removeLoginNamesMigration(t, s)
 	if _, err = s.DB.Exec("DROP TABLE stream_reservations"); err != nil {
 		t.Fatal(err)
 	}

@@ -45,11 +45,8 @@ test('error wording alone cannot expire a session',async()=>{
  assert.deepEqual(events,[])
 })
 
-test('explicit subscriber login handles existing duplicate identities',async()=>{
- const {loginPath}=await import('data:text/javascript;base64,'+Buffer.from(outputText).toString('base64'))
- assert.equal(loginPath('subscriber'),'portal/login')
- assert.equal(loginPath('auto'),'auth/login')
+test('login uses the automatic account endpoint',()=>{
  const app=readFileSync(new URL('../src/App.vue',import.meta.url),'utf8')
- assert.match(app,/get\('portal'\) === '1' \? 'subscriber'/)
- assert.match(app,/api\(loginPath\(loginIdentity.value\)/)
+ assert.match(app,/api\('auth\/login','POST'/)
+ assert.doesNotMatch(app,/登录身份|loginIdentity/)
 })
