@@ -24,6 +24,7 @@ import (
 )
 
 type App struct {
+	verifySource     func(context.Context, Upstream, embyCredentials) error
 	AccessRPC        func(context.Context, AccessCommand) (AccessResult, error)
 	accessMu         sync.Mutex
 	AcquireQuota     func(context.Context, Route, int64) error

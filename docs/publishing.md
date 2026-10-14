@@ -57,11 +57,20 @@ docker compose -f deploy/docker-compose.yml pull
 docker compose -f deploy/docker-compose.yml up -d --no-build
 ```
 
-当前已发布版本为 `1.0.20`，`latest` 指向该版本，目标架构为 AMD64/ARM64。HTTPS 和 Agent 使用同一镜像，参照 deployment.md 的配置文件。
+当前已发布版本为 `1.0.21`，`latest` 指向该版本，目标架构为 AMD64/ARM64。HTTPS 和 Agent 使用同一镜像，参照 deployment.md 的配置文件。
 
 ## 构建上下文
 
 源代码仓库不包含数据库、master.key、Agent 身份、.env、node_modules、本机构建二进制或临时验收截图（README 展示图片保存在 docs/ 并随仓库提交）。前端 dist 在验证/Docker 构建时生成；本地交接文档 CLAUDE.md 同时被 Git 和 Docker 构建上下文忽略。
+
+## 1.0.21 更新
+
+- 用户自助添加或编辑源站时，保存前验证 Emby 服务器信息、真实账号登录和 Token 的有效性；验证失败不保存配置或生成新地址。拒绝绑定源站管理员账号，验证请求限制超时和响应大小、禁止跳转，并尝试注销临时会话。
+- 自助路由只放行列明的 Emby 播放器接口和请求方法，控制端与 Agent 均拒绝未知路径、CONNECT 和 WebSocket 协议升级；保留媒体 HTTP/HTTPS 跳转与回源网络检查。
+- 修正管理页面 GitHub 页脚，按右侧内容区居中；登录与用户中心继续使用共享页脚。
+- 增加源站验证、失败不保存、控制端与 Agent 正常播放及转发限制回归测试。无数据库迁移，schema 仍为 15。
+
+先升级控制端，再升级全部 Agent，双方更新后转发限制才完整生效。存量自助源站不会在启动时批量重新验证，后续保存时验证；转发接口限制升级后即生效。自助地址不支持依赖 WebSocket 的实时通知，特殊播放器接口可能需要补充白名单。验证仅确认 Emby 协议行为，不能保证恶意服务没有伪装，也不能证明允许的媒体接口只传输影音内容。
 
 ## 1.0.20 更新
 

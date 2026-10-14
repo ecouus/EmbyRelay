@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 func TestAdminUserSourcesPrivacyOwnershipAndAddresses(t *testing.T) {
 	a, admin, owner, _ := subscriptionFixture(t)
+	a.verifySource = func(context.Context, Upstream, embyCredentials) error { return nil }
 	portal := portalLogin(t, a, "viewer")
 	upstreams, _ := list[Upstream](a.Store, "upstream")
 	sourceURL := upstreams[0].BaseURL

@@ -101,6 +101,11 @@ func mediaRequest(r *http.Request) bool {
 }
 func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeRoute, key Key, mw *meterWriter, prefix string, cancel context.CancelFunc) (*http.Request, *proxy.Gateway, func(), bool) {
 	done := func() {}
+	if rr.route.OwnerAccountID != "" && !allowedUserSourceRequest(q) {
+		diagnosticReason(q, "用户源站：不允许的接口、方法或协议升级")
+		apiError(w, 403, "用户源站仅允许 Emby 播放器接口，不支持协议升级")
+		return q, nil, done, true
+	}
 	path := strings.ToLower(q.URL.Path)
 	if strings.HasPrefix(path, "/emby/") {
 		path = strings.TrimPrefix(path, "/emby")

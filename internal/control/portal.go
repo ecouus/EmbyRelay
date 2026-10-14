@@ -95,6 +95,57 @@ func (a *App) portal(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "DELETE" && !decode(w, r, &in) {
 		return
 	}
+	// Perform network verification before taking mutation/account locks.
+	var verifiedBase, verifiedCredentials, originalSource string
+	if r.Method != "DELETE" {
+		if err := accountActive(c, time.Now()); err != nil {
+			apiError(w, 403, err.Error())
+			return
+		}
+		u := Upstream{Mode: "proxy"}
+		if sourceID != "" {
+			var err error
+			u, err = get[Upstream](a.Store, "upstream", sourceID)
+			if err != nil || u.OwnerAccountID != c.ID {
+				apiError(w, 404, "源站不存在")
+				return
+			}
+			originalSource = string(Encode(u))
+		}
+		normalized, err := normalizeUpstreamURL(in.BaseURL)
+		if err != nil {
+			apiError(w, 400, err.Error())
+			return
+		}
+		u.BaseURL = normalized
+		u.Name = in.Name
+		if err := validateUpstream(u); err != nil {
+			apiError(w, 400, err.Error())
+			return
+		}
+		if in.Password != nil && *in.Password == "" {
+			in.Password = nil
+		}
+		if err := a.updateCredentials(&u, in.Username, in.Password, false); err != nil {
+			apiError(w, 400, err.Error())
+			return
+		}
+		var creds embyCredentials
+		raw, err := a.unseal(u.EncryptedCredentials)
+		if err != nil || json.Unmarshal([]byte(raw), &creds) != nil || creds.Username == "" || creds.Password == "" {
+			apiError(w, 400, "请填写 Emby 用户名和密码")
+			return
+		}
+		verify := a.verifySource
+		if verify == nil {
+			verify = verifyEmbySource
+		}
+		if err := verify(r.Context(), u, creds); err != nil {
+			apiError(w, 400, err.Error())
+			return
+		}
+		verifiedBase, verifiedCredentials = u.BaseURL, u.EncryptedCredentials
+	}
 	a.mutate(w, func() error {
 		a.accessMu.Lock()
 		defer a.accessMu.Unlock()
@@ -110,6 +161,9 @@ func (a *App) portal(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if r.Method != "DELETE" {
+			if sourceID != "" && string(Encode(u)) != originalSource {
+				return fmt.Errorf("源站已变化，请重新保存")
+			}
 			if err = accountActive(fresh, time.Now()); err != nil {
 				return err
 			}
@@ -125,18 +179,11 @@ func (a *App) portal(w http.ResponseWriter, r *http.Request) {
 			if e = validateUpstream(u); e != nil {
 				return e
 			}
-			// Users cannot supply private-network exceptions or choose other users' routes.
-			if in.Password != nil && *in.Password == "" {
-				in.Password = nil
+			// The exact address and credentials checked above are committed together.
+			if u.BaseURL != verifiedBase {
+				return fmt.Errorf("源站地址已变化，请重新保存")
 			}
-			if e = a.updateCredentials(&u, in.Username, in.Password, false); e != nil {
-				return e
-			}
-			var creds embyCredentials
-			raw, e := a.unseal(u.EncryptedCredentials)
-			if e != nil || json.Unmarshal([]byte(raw), &creds) != nil || creds.Username == "" || creds.Password == "" {
-				return fmt.Errorf("请填写 Emby 用户名和密码")
-			}
+			u.EncryptedCredentials = verifiedCredentials
 		}
 		tx, e := a.Store.DB.Begin()
 		if e != nil {

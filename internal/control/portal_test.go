@@ -25,6 +25,7 @@ func portalLogin(t *testing.T, a *App, name string) *http.Cookie {
 }
 func TestPortalSharedAccountIsolation(t *testing.T) {
 	a, admin, c, _ := subscriptionFixture(t)
+	a.verifySource = func(context.Context, Upstream, embyCredentials) error { return nil }
 	pc := portalLogin(t, a, "viewer")
 	sources, _ := list[Upstream](a.Store, "upstream")
 	base := sources[0].BaseURL
@@ -167,17 +168,12 @@ func TestPortalRejectsPolicyOverrides(t *testing.T) {
 		}
 	}
 	w := call(t, a, cookie, "POST", "/api/v1/portal/sources", map[string]string{"name": "private", "base_url": "http://127.0.0.1:1", "emby_username": "demo", "emby_password": "demo-password"})
-	if w.Code != 200 {
-		t.Fatal(w.Body.String())
+	if w.Code != 400 {
+		t.Fatal("private source accepted", w.Code, w.Body.String())
 	}
 	w = call(t, a, cookie, "GET", "/api/v1/portal/sources", nil)
-	var sources []struct {
-		Addresses []string `json:"addresses"`
-	}
-	json.Unmarshal(w.Body.Bytes(), &sources)
-	w = call(t, a, nil, "POST", sources[0].Addresses[0]+"Users/AuthenticateByName", map[string]string{"Username": "viewer", "Pw": "viewer-password"})
-	if w.Code != 401 {
-		t.Fatal("private source was reachable", w.Code)
+	if strings.TrimSpace(w.Body.String()) != "[]" {
+		t.Fatal("rejected source was persisted", w.Body.String())
 	}
 }
 
