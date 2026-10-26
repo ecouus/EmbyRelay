@@ -3,7 +3,6 @@ package control
 import (
 	"bufio"
 	"context"
-	"crypto/subtle"
 	"database/sql"
 	"embyrelay/internal/proxy"
 	"errors"
@@ -37,9 +36,8 @@ func (a *App) play(w http.ResponseWriter, r *http.Request) {
 	digest := Hash(parts[1])
 	valid := false
 	var accessKey Key
-	for _, key := range rr.keys {
-		match := subtle.ConstantTimeCompare([]byte(digest), []byte(key.Hash)) == 1
-		if match && key.Enabled && (key.ExpiresAt == 0 || key.ExpiresAt > time.Now().Unix()) {
+	for _, key := range rr.byHash[digest] {
+		if key.Enabled && (key.ExpiresAt == 0 || key.ExpiresAt > time.Now().Unix()) {
 			valid = true
 			accessKey = key
 		}

@@ -87,6 +87,7 @@ type runtimeRoute struct {
 	route   Route
 	gateway *proxy.Gateway
 	keys    []Key
+	byHash  map[string][]Key
 	usage   *routeRuntime
 }
 type cachedMediaGateway struct {
@@ -221,10 +222,11 @@ func (a *App) Apply(s Snapshot) error {
 			a.usage[r.ID] = runtime
 		}
 		cfg := proxy.Config{AutoMediaRedirect: true, Upstream: target, AccessKey: ID(), Network: p, MaxConcurrent: r.MaxConcurrent, MaxResumes: 32, Mode: "proxy", RedirectHosts: u.RedirectHosts, TrustedAuth: true}
-		rr := &runtimeRoute{route: r, gateway: proxy.New(cfg), usage: runtime}
+		rr := &runtimeRoute{route: r, gateway: proxy.New(cfg), usage: runtime, byHash: map[string][]Key{}}
 		for _, k := range s.Keys {
 			if k.RouteID == r.ID {
 				rr.keys = append(rr.keys, k)
+				rr.byHash[k.Hash] = append(rr.byHash[k.Hash], k)
 			}
 		}
 		next.routes[r.Alias] = rr
@@ -717,8 +719,16 @@ func (a *App) users(w http.ResponseWriter, r *http.Request, u User, id string) {
 		apiError(w, 400, "cannot demote your own account")
 		return
 	}
-	h, e := password(in.Password)
-	if e != nil {
+	var h, oldName, oldRole, oldHash string
+	var e error
+	keepPassword := r.Method == "PATCH" && in.Password == ""
+	if keepPassword {
+		if a.Store.DB.QueryRow("SELECT username,role,password_hash FROM users WHERE id=?", id).Scan(&oldName, &oldRole, &oldHash) != nil {
+			apiError(w, 400, "user not found or storage unavailable")
+			return
+		}
+		h = oldHash
+	} else if h, e = password(in.Password); e != nil {
 		apiError(w, 400, e.Error())
 		return
 	}
@@ -737,6 +747,9 @@ func (a *App) users(w http.ResponseWriter, r *http.Request, u User, id string) {
 		n, _ := result.RowsAffected()
 		if n != 1 {
 			return fmt.Errorf("user not found")
+		}
+		if keepPassword && in.Username == oldName && in.Role == oldRole {
+			return nil
 		}
 		_, err = tx.Exec("DELETE FROM login_sessions WHERE user_id=?", id)
 		return err
