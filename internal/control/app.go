@@ -414,7 +414,8 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, user User) {
 	case p == "overview" && r.Method == "GET":
 		s := a.state.Load()
 		traffic, _ := a.Store.Traffic()
-		writeJSON(w, 200, map[string]any{"version": s.snapshot.Version, "active_requests": a.active.Load(), "requests": a.requests.Load(), "upstreams": len(s.snapshot.Upstreams), "routes": len(s.snapshot.Routes), "traffic": traffic})
+		total, _ := a.Store.TrafficTotal()
+		writeJSON(w, 200, map[string]any{"version": s.snapshot.Version, "active_requests": a.active.Load(), "requests": a.requests.Load(), "upstreams": len(s.snapshot.Upstreams), "routes": len(s.snapshot.Routes), "traffic": traffic, "traffic_total": map[string]int64{"ingress_bytes": total.Ingress, "egress_bytes": total.Egress}})
 	case r.URL.Path == "/metrics" && r.Method == "GET":
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		fmt.Fprintf(w, "# TYPE embyrelay_active_requests gauge\nembyrelay_active_requests %d\n# TYPE embyrelay_requests_total counter\nembyrelay_requests_total %d\n", a.active.Load(), a.requests.Load())

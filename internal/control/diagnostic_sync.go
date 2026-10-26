@@ -149,7 +149,7 @@ func (a *App) receiveDiagnostics(node Node, batch DiagnosticBatch) (DiagnosticAc
 		}
 		ack.IDs = append(ack.IDs, d.ID)
 	}
-	if _, err = tx.Exec("DELETE FROM request_diagnostics WHERE node_id=? AND id NOT IN (SELECT id FROM request_diagnostics WHERE node_id=? ORDER BY created_at DESC,id DESC LIMIT 1000)", node.ID, node.ID); err != nil {
+	if err = trimDiagnostics(tx, node.ID, 1000); err != nil {
 		return DiagnosticAck{}, err
 	}
 	return ack, tx.Commit()

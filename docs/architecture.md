@@ -19,7 +19,7 @@ flowchart LR
 
 ## 数据持久化
 
-SQLite 使用 `database/sql` + modernc 纯 Go 驱动，WAL、busy timeout、外键和单写连接。`migrations` 中的 SQL 嵌入二进制，由事务迁移器按版本顺序应用；数据库版本高于程序支持版本时拒绝启动。内置迁移器按版本向前迁移。
+SQLite 使用 `database/sql` + modernc 纯 Go 驱动，WAL（`synchronous=NORMAL`，WAL 下断电不损坏数据库，仅可能丢失最近未检查点的提交）、busy timeout、外键和单写连接。`migrations` 中的 SQL 嵌入二进制，由事务迁移器按版本顺序应用；数据库版本高于程序支持版本时拒绝启动。内置迁移器按版本向前迁移。
 
 SQLite 普通路径按文件名处理，路径中的 `?`、`#`、空格会自动转义。需要连接参数时使用显式 `file:` URI（例如 `file:/data/relay.db?cache=private`）；程序保留已有参数，并为每个连接设置繁忙等待和外键约束。迁移工具也支持这种 URI。
 

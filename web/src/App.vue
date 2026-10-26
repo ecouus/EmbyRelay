@@ -71,7 +71,7 @@ const bytes = (n:number=0)=>{ if(n<1024)return `${n} B`; const i=Math.min(Math.f
 const date = (v:number)=>v?new Date(v*1000).toLocaleString('zh-CN'):'—'
 const routeName = (id:string)=>routes.value.find(r=>r.id===id)?.alias||id.slice(0,10)
 const online = (n:Node)=>n.enabled && Date.now()/1000-n.last_seen<60
-const totalConsumption = computed(()=>traffic.value.reduce((n,t)=>n+t.ingress_bytes+t.egress_bytes,0))
+const totalConsumption = computed(()=>{const t=overview.value?.traffic_total;return t?(t.ingress_bytes||0)+(t.egress_bytes||0):traffic.value.reduce((n,x)=>n+x.ingress_bytes+x.egress_bytes,0)})
 const todayConsumption = computed(()=>traffic.value.filter(t=>t.date===new Date().toISOString().slice(0,10)).reduce((n,t)=>n+t.ingress_bytes+t.egress_bytes,0))
 const barData = computed(()=>{const groups:Record<string,number>={};traffic.value.forEach(t=>groups[t.date]=(groups[t.date]||0)+t.ingress_bytes+t.egress_bytes);return Object.entries(groups).sort().slice(-14)})
 const theme = computed(()=>({common:{primaryColor:dark.value?'#2dd4bf':'#0d9488',primaryColorHover:dark.value?'#5eead4':'#0f766e',primaryColorPressed:'#115e59',borderRadius:'12px',fontSize:'14px',fontFamily:'system-ui, -apple-system, "Segoe UI", "PingFang SC", sans-serif',bodyColor:dark.value?'#000000':'#f8fafc',cardColor:dark.value?'#111111':'#ffffff',modalColor:dark.value?'#111111':'#ffffff',tableColor:dark.value?'#111111':'#ffffff',inputColor:dark.value?'#1a1a1a':'#ffffff',borderColor:dark.value?'#2d2d2d':'#e2e8f0',textColorBase:dark.value?'#f5f5f5':'#0f172a'},DataTable:{thColor:dark.value?'#1a1a1a':'#f8fafc',tdColorHover:dark.value?'#1a1a1a':'#f8fafc',thFontWeight:'600',tdPaddingMedium:'16px 20px',thPaddingMedium:'13px 20px'},Button:{fontWeight:'500'},Card:{borderRadius:'16px'}}))

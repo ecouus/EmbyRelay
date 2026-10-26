@@ -1,6 +1,6 @@
 # SQLite 与 PostgreSQL 部署
 
-控制端支持 SQLite 和 PostgreSQL。默认 SQLite，已有部署升级时保持原数据库类型。Relay Agent 继续使用本地 SQLite，保存配置缓存、已消费流量和预留额度。
+控制端支持 SQLite 和 PostgreSQL。当前 schema 版本 16（迁移 016 为清理与会话查询补充索引，可重复执行）。默认 SQLite（WAL + `synchronous=NORMAL`），已有部署升级时保持原数据库类型。Relay Agent 继续使用本地 SQLite，保存配置缓存、已消费流量和预留额度。
 
 ## 首次安装
 

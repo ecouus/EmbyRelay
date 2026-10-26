@@ -55,6 +55,7 @@ func Open(driver, source string) (*DB, error) {
 		query := uri.Query()
 		query.Add("_pragma", "busy_timeout(5000)")
 		query.Add("_pragma", "foreign_keys(ON)")
+		query.Add("_pragma", "synchronous(NORMAL)")
 		uri.RawQuery = query.Encode()
 		source = uri.String()
 	}

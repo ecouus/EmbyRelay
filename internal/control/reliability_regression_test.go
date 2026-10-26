@@ -435,7 +435,7 @@ func removeLoginNamesMigration(t *testing.T, s *Store) {
 func TestHistoricalLoginCollisionStopsMigration(t *testing.T) {
 	a, _, c, _ := subscriptionFixture(t)
 	removeLoginNamesMigration(t, a.Store)
-	if _, err := a.Store.DB.Exec("DELETE FROM schema_migrations WHERE version=15"); err != nil {
+	if _, err := a.Store.DB.Exec("DELETE FROM schema_migrations WHERE version>=15"); err != nil {
 		t.Fatal(err)
 	}
 	c.Username = "ADMIN"

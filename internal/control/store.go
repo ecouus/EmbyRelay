@@ -507,6 +507,16 @@ func (s *Store) Traffic() ([]Traffic, error) {
 	}
 	return out, nil
 }
+
+// TrafficTotal sums every retained daily row, not just the newest page that
+// Traffic returns, with unsettled stream reservations excluded.
+func (s *Store) TrafficTotal() (Traffic, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out Traffic
+	e := s.DB.QueryRow("SELECT CAST(COALESCE(SUM(t.ingress_bytes),0) AS BIGINT),CAST(COALESCE(SUM(MAX(0,t.egress_bytes-COALESCE(r.pending_bytes,0))),0) AS BIGINT) FROM traffic_daily t LEFT JOIN stream_reservations r ON r.date=t.date AND r.route_id=t.route_id").Scan(&out.Ingress, &out.Egress)
+	return out, e
+}
 func (s *Store) Setting(key string) string {
 	var v string
 	s.DB.QueryRow("SELECT value FROM settings WHERE key=?", key).Scan(&v)
@@ -520,29 +530,67 @@ func (s *Store) Audit(actor, action, target string) error {
 	_, e := s.DB.Exec("INSERT INTO audit_logs(actor_id,action,target,created_at) VALUES(?,?,?,?)", actor, action, target, time.Now().Unix())
 	return e
 }
+
+type execQuerier interface {
+	QueryRow(string, ...any) *sql.Row
+	Exec(string, ...any) (sql.Result, error)
+}
+
+// trimDiagnostics keeps the newest keep records of one source. The boundary
+// row is found through the (node_id,created_at,id) index, then older rows go.
+func trimDiagnostics(db execQuerier, node string, keep int) error {
+	var createdAt int64
+	var id string
+	e := db.QueryRow("SELECT created_at,id FROM request_diagnostics WHERE node_id=? ORDER BY created_at DESC,id DESC LIMIT 1 OFFSET ?", node, keep-1).Scan(&createdAt, &id)
+	if e == sql.ErrNoRows {
+		return nil
+	}
+	if e != nil {
+		return e
+	}
+	_, e = db.Exec("DELETE FROM request_diagnostics WHERE node_id=? AND (created_at<? OR (created_at=? AND id<?))", node, createdAt, createdAt, id)
+	return e
+}
 func (s *Store) Cleanup() {
 	now := time.Now().Unix()
-	s.DB.Exec("DELETE FROM request_diagnostics WHERE node_id='' AND id NOT IN (SELECT id FROM request_diagnostics WHERE node_id='' ORDER BY created_at DESC,id DESC LIMIT 1000)")
-	s.DB.Exec("DELETE FROM audit_logs WHERE created_at<?", now-365*86400)
-	s.DB.Exec("DELETE FROM traffic_daily WHERE date<?", time.Unix(now-trafficRetentionDays*86400, 0).UTC().Format("2006-01-02"))
-	s.DB.Exec("DELETE FROM stream_reservations WHERE pending_bytes=0 AND date<?", time.Unix(now-trafficRetentionDays*86400, 0).UTC().Format("2006-01-02"))
-	s.DB.Exec("DELETE FROM quota_leases WHERE date<?", time.Unix(now-90*86400, 0).UTC().Format("2006-01-02"))
-	s.DB.Exec("DELETE FROM remote_sessions WHERE updated_at<?", now-30*86400)
-	s.DB.Exec("DELETE FROM login_sessions WHERE expires_at<?", now)
-	s.DB.Exec("DELETE FROM access_tokens WHERE expires_at<=?", now)
-	s.DB.Exec("DELETE FROM portal_sessions WHERE expires_at<=?", now)
+	retained := time.Unix(now-trafficRetentionDays*86400, 0).UTC().Format("2006-01-02")
+	run := func(name string, e error) {
+		if e != nil {
+			slog.Warn("cleanup statement failed", "target", name, "error", e)
+		}
+	}
+	exec := func(name, query string, args ...any) {
+		_, e := s.DB.Exec(query, args...)
+		run(name, e)
+	}
+	run("request_diagnostics", trimDiagnostics(s.DB, "", 1000))
+	exec("audit_logs", "DELETE FROM audit_logs WHERE created_at<?", now-365*86400)
+	exec("traffic_daily", "DELETE FROM traffic_daily WHERE date<?", retained)
+	exec("stream_reservations", "DELETE FROM stream_reservations WHERE pending_bytes=0 AND date<?", retained)
+	exec("quota_leases", "DELETE FROM quota_leases WHERE date<?", time.Unix(now-90*86400, 0).UTC().Format("2006-01-02"))
+	exec("remote_sessions", "DELETE FROM remote_sessions WHERE updated_at<?", now-30*86400)
+	exec("login_sessions", "DELETE FROM login_sessions WHERE expires_at<?", now)
+	exec("access_tokens", "DELETE FROM access_tokens WHERE expires_at<=?", now)
+	exec("portal_sessions", "DELETE FROM portal_sessions WHERE expires_at<=?", now)
 	// Authorization still expires after 30 seconds. Keep expired leases briefly
 	// so a delayed finish can refund the cycle in which its last chunk was charged.
-	s.DB.Exec("DELETE FROM access_leases WHERE expires_at<=?", now-int64(accessSettlementGrace/time.Second))
+	exec("access_leases", "DELETE FROM access_leases WHERE expires_at<=?", now-int64(accessSettlementGrace/time.Second))
 	if err := s.cleanupAccessUsage(time.Unix(now, 0)); err != nil {
 		slog.Error("subscription usage cleanup failed", "error", err)
 	}
-	s.DB.Exec("DELETE FROM access_targets WHERE expires_at<=? OR NOT EXISTS (SELECT 1 FROM access_tokens WHERE hash=access_targets.token_hash)", now)
-	s.DB.Exec("DELETE FROM access_devices WHERE last_seen<?", now-90*86400)
-	s.DB.Exec("DELETE FROM nonces WHERE created_at<?", now-600)
-	s.DB.Exec("DELETE FROM enroll_tokens WHERE expires_at<?", now)
-	s.DB.Exec("DELETE FROM stream_sessions WHERE ended_at<?", now-30*86400)
+	exec("access_targets", "DELETE FROM access_targets WHERE expires_at<=?", now)
+	// Only live targets remain, so the orphan scan stays small.
+	exec("access_targets", "DELETE FROM access_targets WHERE NOT EXISTS (SELECT 1 FROM access_tokens WHERE hash=access_targets.token_hash)")
+	exec("access_devices", "DELETE FROM access_devices WHERE last_seen<?", now-90*86400)
+	exec("nonces", "DELETE FROM nonces WHERE created_at<?", now-600)
+	exec("enroll_tokens", "DELETE FROM enroll_tokens WHERE expires_at<?", now)
+	exec("stream_sessions", "DELETE FROM stream_sessions WHERE ended_at<?", now-30*86400)
 }
-func (s *Store) Check() error   { return s.DB.Ping() }
-func (s *Store) Close() error   { return s.DB.Close() }
-func (s *Store) String() string { return fmt.Sprint("SQLite control store") }
+func (s *Store) Check() error { return s.DB.Ping() }
+func (s *Store) Close() error { return s.DB.Close() }
+func (s *Store) String() string {
+	if s.DB.Driver == "postgres" {
+		return "PostgreSQL control store"
+	}
+	return "SQLite control store"
+}
