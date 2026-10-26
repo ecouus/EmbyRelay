@@ -1,4 +1,4 @@
 package version
 
 // Version is shared by startup logs and the health API.
-const Version = "1.0.23"
+const Version = "1.0.24-rc.1"
