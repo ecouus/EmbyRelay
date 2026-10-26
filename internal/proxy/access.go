@@ -15,15 +15,83 @@ import (
 type accessProtection struct {
 	source, token string
 	wrap          func(string) (string, error)
+	wrapBatch     func([]string) ([]string, error)
 }
+
+var uriAttribute = regexp.MustCompile(`URI="([^"]+)"`)
+
+const wrapBatchSize = 512
+
+// wrapAll protects every target with as few control calls as possible. Without
+// a batch function (or for one target) it falls back to single calls.
+func (p accessProtection) wrapAll(targets []string) ([]string, error) {
+	out := make([]string, 0, len(targets))
+	if p.wrapBatch == nil || len(targets) < 2 {
+		for _, target := range targets {
+			wrapped, e := p.wrap(target)
+			if e != nil {
+				return nil, e
+			}
+			out = append(out, wrapped)
+		}
+		return out, nil
+	}
+	for len(targets) > 0 {
+		part := targets[:min(len(targets), wrapBatchSize)]
+		wrapped, e := p.wrapBatch(part)
+		if e != nil {
+			return nil, e
+		}
+		if len(wrapped) != len(part) {
+			return nil, fmt.Errorf("invalid batch wrap response")
+		}
+		out = append(out, wrapped...)
+		targets = targets[len(part):]
+	}
+	return out, nil
+}
+
+// wrapSet collects URLs first so a whole response is wrapped in one batch.
+type wrapSet struct {
+	index   map[string]int
+	targets []string
+	apply   []func([]string)
+}
+
+func (w *wrapSet) add(target string, set func(string)) {
+	if w.index == nil {
+		w.index = map[string]int{}
+	}
+	i, ok := w.index[target]
+	if !ok {
+		i = len(w.targets)
+		w.index[target] = i
+		w.targets = append(w.targets, target)
+	}
+	w.apply = append(w.apply, func(wrapped []string) { set(wrapped[i]) })
+}
+func (w *wrapSet) run(p accessProtection) error {
+	if len(w.targets) == 0 {
+		return nil
+	}
+	wrapped, e := p.wrapAll(w.targets)
+	if e != nil {
+		return e
+	}
+	for _, apply := range w.apply {
+		apply(wrapped)
+	}
+	return nil
+}
+
 type accessProtectionKey struct{}
 type forceMediaKey struct{}
 
 func WithForcedMedia(ctx context.Context) context.Context {
 	return context.WithValue(ctx, forceMediaKey{}, true)
 }
-func WithAccessProtection(ctx context.Context, source, token string, wrap func(string) (string, error)) context.Context {
-	return context.WithValue(ctx, accessProtectionKey{}, accessProtection{source, token, wrap})
+func WithAccessProtection(ctx context.Context, source, token string, wrap func(string) (string, error), wrapBatch func([]string) ([]string, error)) context.Context {
+	return context.WithValue(ctx, accessProtectionKey{}, accessProtection{source, token, wrap, wrapBatch})
 }
 func protectAccessResponse(resp *http.Response, prefix string, p accessProtection) error {
 	resp.Header.Del("Set-Cookie")
@@ -54,7 +122,8 @@ func protectAccessResponse(resp *http.Response, prefix string, p accessProtectio
 	var body []byte
 	if playlist {
 		lines := strings.Split(string(raw), "\n")
-		attr := regexp.MustCompile(`URI="([^"]+)"`)
+		var set wrapSet
+		parts := make([][]string, len(lines))
 		for i, line := range lines {
 			text := strings.TrimSpace(line)
 			if text != "" && !strings.HasPrefix(text, "#") {
@@ -62,29 +131,32 @@ func protectAccessResponse(resp *http.Response, prefix string, p accessProtectio
 				if e != nil {
 					return e
 				}
-				lines[i], e = p.wrap(u.String())
+				set.add(u.String(), func(wrapped string) { lines[i] = wrapped })
+				continue
+			}
+			matches := uriAttribute.FindAllStringSubmatchIndex(line, -1)
+			if len(matches) == 0 {
+				continue
+			}
+			last := 0
+			for _, m := range matches {
+				u, e := resp.Request.URL.Parse(line[m[2]:m[3]])
 				if e != nil {
 					return e
 				}
-			} else {
-				var rewriteErr error
-				lines[i] = attr.ReplaceAllStringFunc(line, func(m string) string {
-					val := attr.FindStringSubmatch(m)[1]
-					u, e := resp.Request.URL.Parse(val)
-					if e != nil {
-						rewriteErr = e
-						return m
-					}
-					wrapped, e := p.wrap(u.String())
-					if e != nil {
-						rewriteErr = e
-						return m
-					}
-					return "URI=\"" + wrapped + "\""
-				})
-				if rewriteErr != nil {
-					return rewriteErr
-				}
+				parts[i] = append(parts[i], line[last:m[2]], "")
+				k := len(parts[i]) - 1
+				set.add(u.String(), func(wrapped string) { parts[i][k] = wrapped })
+				last = m[3]
+			}
+			parts[i] = append(parts[i], line[last:])
+		}
+		if e := set.run(p); e != nil {
+			return e
+		}
+		for i, pieces := range parts {
+			if pieces != nil {
+				lines[i] = strings.Join(pieces, "")
 			}
 		}
 		body = []byte(strings.Join(lines, "\n"))
@@ -93,6 +165,7 @@ func protectAccessResponse(resp *http.Response, prefix string, p accessProtectio
 		if json.Unmarshal(raw, &data) != nil {
 			return fmt.Errorf("invalid subscription JSON")
 		}
+		var set wrapSet
 		var walk func(any) error
 		walk = func(v any) error {
 			switch x := v.(type) {
@@ -120,11 +193,7 @@ func protectAccessResponse(resp *http.Response, prefix string, p accessProtectio
 						if u.Scheme != "http" && u.Scheme != "https" {
 							return fmt.Errorf("unsupported media URL")
 						}
-						wrapped, e := p.wrap(u.String())
-						if e != nil {
-							return e
-						}
-						x[key] = wrapped
+						set.add(u.String(), func(wrapped string) { x[key] = wrapped })
 					case "servertoken", "accesstoken":
 						x[key] = p.token
 					case "serveraddress", "localaddress", "wanaddress":
@@ -141,6 +210,9 @@ func protectAccessResponse(resp *http.Response, prefix string, p accessProtectio
 			return nil
 		}
 		if e := walk(data); e != nil {
+			return e
+		}
+		if e := set.run(p); e != nil {
 			return e
 		}
 		body, e = json.Marshal(data)

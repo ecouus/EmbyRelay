@@ -115,8 +115,7 @@ func (a *App) accessLogin(ctx context.Context, c AccessAccount, in AccessCommand
 	if err != nil {
 		return denied("登录会话保存失败")
 	}
-	a.accessMu.Lock()
-	defer a.accessMu.Unlock()
+	defer a.lockAccount(c.ID)()
 	tx, err := a.Store.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return denied("订阅服务不可用")

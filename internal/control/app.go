@@ -26,7 +26,10 @@ import (
 type App struct {
 	verifySource     func(context.Context, Upstream, embyCredentials) error
 	AccessRPC        func(context.Context, AccessCommand) (AccessResult, error)
-	accessMu         sync.Mutex
+	accessMu         sync.RWMutex
+	accountLocks     accountLocks
+	pruneMu          sync.Mutex
+	wrapBatchRetry   atomic.Int64
 	AcquireQuota     func(context.Context, Route, int64) error
 	Store            *Store
 	SecureCookies    bool

@@ -85,7 +85,7 @@ POST /api/v1/upstreams/{id}/credentials：仅管理员，要求登录和 X-Reque
 
 | 项目 | 协议 |
 | :--- | :--- |
-| 操作 | login / begin / check / charge / finish / logout / wrap / resolve / info |
+| 操作 | login / begin / check / charge / pace / finish / logout / wrap / wrap_batch / resolve / info；`wrap_batch` 一次包装最多 1024 个地址（`targets` 入、`targets` 出），旧控制端不支持时 Agent 回退逐个 `wrap`；`pace` 的字节数上限为约 250 ms 速率（不超过 1 MiB） |
 | 节点能力 | 心跳声明 `subscription_support=true` 和 `device_identity_support=true` |
 | 语义拒绝 | HTTP 200 中返回 `error/code`，Agent 检查 `error` |
 | 断联 | 拒绝授权 |

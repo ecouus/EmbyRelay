@@ -173,6 +173,9 @@ type meterWriter struct {
 	accessCharge    func(int) error
 	accessRefund    int64
 	accessCredit    int64
+	accessGrants    int
+	consumed        int64
+	lastConsume     time.Time
 	routeCredit     int64
 	routeCreditDate string
 	stream          bool
@@ -189,6 +192,8 @@ type meterWriter struct {
 	lastProgress   time.Time
 	status         string
 }
+
+const accessBatchStart, accessBatchChunk = 64 << 10, 1 << 20
 
 func (w *meterWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (w *meterWriter) WriteHeader(code int) {
@@ -224,30 +229,23 @@ func (w *meterWriter) wait(n int) error {
 		return nil
 	}
 }
-func (w *meterWriter) reserve(n int) error {
+func (w *meterWriter) reserve(n int) (int, error) {
 	if w.accessCharge != nil {
-		if err := w.accessCharge(n); err != nil {
-			return err
+		var err error
+		if n, err = w.accessAllowance(n); err != nil {
+			return 0, err
 		}
 	}
 	if err := w.reserveRoute(n); err != nil {
-		if w.accessCharge != nil {
-			w.mu.Lock()
-			w.accessRefund += int64(n)
-			w.mu.Unlock()
-		}
-		return err
+		return 0, err
 	}
 	if w.accessPace != nil {
 		if err := w.accessPace(n); err != nil {
 			w.app.Store.Charge(w.route.ID, 0, 0, -int64(n))
-			w.mu.Lock()
-			w.accessRefund += int64(n)
-			w.mu.Unlock()
-			return err
+			return 0, err
 		}
 	}
-	return nil
+	return n, nil
 }
 func (w *meterWriter) reserveRoute(n int) error {
 	if e := w.wait(n); e != nil {
@@ -290,6 +288,10 @@ func (w *meterWriter) routeAllowance(n int) (int, error) {
 		return 0, e
 	}
 	if w.routeCredit == 0 {
+		// The grant date may change; settle consumption of the old one first.
+		if err := w.consumeStream(0, true); err != nil {
+			return 0, err
+		}
 		grant := int64(10 << 20)
 		if w.route.DailyQuota > 0 && grant > w.route.DailyQuota {
 			grant = w.route.DailyQuota
@@ -320,7 +322,31 @@ func (w *meterWriter) routeAllowance(n int) (int, error) {
 	}
 	return min(n, int(w.routeCredit)), nil
 }
+
+// Egress consumed by video writes is persisted in batches of about 1 MiB or one
+// second. A crash loses at most that much per stream, as unspent reservation.
+func (w *meterWriter) consumeStream(n int64, force bool) error {
+	w.mu.Lock()
+	w.consumed += n
+	if !force && w.consumed < 1<<20 && time.Since(w.lastConsume) < time.Second {
+		w.mu.Unlock()
+		return nil
+	}
+	n, date := w.consumed, w.routeCreditDate
+	w.consumed = 0
+	if n > 0 {
+		w.lastConsume = time.Now()
+	}
+	w.mu.Unlock()
+	if n == 0 {
+		return nil
+	}
+	return w.app.Store.consumeStreamTraffic(w.route.ID, date, n)
+}
 func (w *meterWriter) finishRouteCredit() {
+	if w.stream && w.consumeStream(0, true) != nil {
+		w.setStatus("quota_or_accounting_error")
+	}
 	w.mu.Lock()
 	unused := w.routeCredit
 	w.routeCredit = 0
@@ -332,24 +358,30 @@ func (w *meterWriter) finishRouteCredit() {
 	}
 }
 
-// Keep one centrally authorized video chunk across the smaller writes produced
-// by the upstream body reader. Without this credit, each read incurs an RPC.
+// Keep one centrally authorized chunk across the smaller writes produced by the
+// upstream body reader. Without this credit, each read incurs an RPC. Video
+// takes whole chunks; other requests ramp up so short responses stay cheap, and
+// the unused credit is returned by the finish call.
 func (w *meterWriter) accessAllowance(n int) (int, error) {
 	w.mu.Lock()
 	credit := w.accessCredit
+	grant := streamAccessChunk
+	if !w.stream {
+		grant = min(accessBatchChunk, accessBatchStart<<(2*w.accessGrants))
+	}
 	w.mu.Unlock()
 	if credit == 0 {
-		grant := streamAccessChunk
 		for {
 			err := w.accessCharge(grant)
 			if err == nil {
 				w.mu.Lock()
 				w.accessCredit += int64(grant)
+				w.accessGrants = min(w.accessGrants+1, 8)
 				w.mu.Unlock()
 				credit = int64(grant)
 				break
 			}
-			if grant == 1 || err.Error() != "本周期剩余流量不足" {
+			if grant == 1 || !errors.Is(err, ErrAccessQuota) {
 				return 0, err
 			}
 			grant /= 2
@@ -411,8 +443,8 @@ func (w *meterWriter) Write(b []byte) (int, error) {
 		if size > chunk {
 			size = chunk
 		}
-		usingCredit := w.stream && w.accessCharge != nil
-		if usingCredit {
+		usingCredit := w.accessCharge != nil
+		if usingCredit && w.stream {
 			allowed, e := w.accessAllowance(size)
 			if e != nil {
 				w.setStatus("subscription_denied")
@@ -424,7 +456,7 @@ func (w *meterWriter) Write(b []byte) (int, error) {
 		if w.stream {
 			size, e = w.routeAllowance(size)
 		} else {
-			e = w.reserve(size)
+			size, e = w.reserve(size)
 		}
 		if e != nil {
 			w.setStatus("subscription_denied")
@@ -442,7 +474,7 @@ func (w *meterWriter) Write(b []byte) (int, error) {
 		w.record(n, size, usingCredit)
 		total += n
 		if w.stream && n > 0 {
-			if err := w.app.Store.consumeStreamTraffic(w.route.ID, w.routeCreditDate, int64(n)); err != nil {
+			if err := w.consumeStream(int64(n), false); err != nil {
 				w.setStatus("quota_or_accounting_error")
 				return total, err
 			}
@@ -498,7 +530,8 @@ func (c *meterConn) Write(b []byte) (int, error) {
 		if c.w.accessRate > 0 {
 			size = min(size, accessPaceChunk(c.w.accessRate))
 		}
-		if err := c.w.reserve(size); err != nil {
+		size, err := c.w.reserve(size)
+		if err != nil {
 			c.w.setStatus("subscription_denied")
 			c.Close()
 			return total, err
@@ -506,7 +539,7 @@ func (c *meterConn) Write(b []byte) (int, error) {
 		c.Conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 		n, err := c.Conn.Write(b[:size])
 		c.Conn.SetWriteDeadline(time.Time{})
-		c.w.record(n, size, false)
+		c.w.record(n, size, c.w.accessCharge != nil)
 		total += n
 		if err != nil {
 			return total, err

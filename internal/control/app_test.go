@@ -94,7 +94,7 @@ func TestStreamMeterShrinksChargeNearQuota(t *testing.T) {
 		accessCharge: func(n int) error {
 			charges = append(charges, n)
 			if n > 64*1024 {
-				return fmt.Errorf("本周期剩余流量不足")
+				return ErrAccessQuota
 			}
 			granted += n
 			return nil
