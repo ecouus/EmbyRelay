@@ -214,6 +214,7 @@ func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeR
 	mw.accessRate = out.RateBPS
 	command.Lease = out.Lease
 	requestContext := q.Context()
+	var pacer *accessPacer
 	stop := make(chan struct{})
 	done = func() {
 		close(stop)
@@ -224,6 +225,9 @@ func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeR
 		mw.mu.Lock()
 		finish.Status = mw.responseStatus
 		finish.RefundBytes = mw.accessRefund + mw.accessCredit
+		if pacer != nil {
+			finish.PaceUnusedNS = pacer.unusedNS()
+		}
 		if finish.Status == 0 {
 			finish.Status = 200
 		}
@@ -250,29 +254,15 @@ func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeR
 			}
 		}
 	}()
-	mw.accessPace = func(n int) error {
-		if mw.accessRate <= 0 {
-			return nil
-		}
-		pace := command
-		pace.Action = "pace"
-		pace.Bytes = int64(n)
-		for {
-			result, err := a.accessCall(requestContext, pace)
-			if err != nil {
-				return err
-			}
-			if result.WaitNS <= 0 {
-				return nil
-			}
-			timer := time.NewTimer(time.Duration(result.WaitNS))
-			select {
-			case <-requestContext.Done():
-				timer.Stop()
-				return requestContext.Err()
-			case <-timer.C:
-			}
-		}
+	if mw.accessRate > 0 {
+		pacer = newAccessPacer(requestContext, mw.accessRate, func(ctx context.Context, n int64) (time.Duration, error) {
+			pace := command
+			pace.Action = "pace"
+			pace.Bytes = n
+			result, err := a.accessCall(ctx, pace)
+			return time.Duration(result.WaitNS), err
+		})
+		mw.accessPace = pacer.take
 	}
 	mw.accessCharge = func(n int) error {
 		charge := command
@@ -382,6 +372,9 @@ func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeR
 		}
 		q = q.WithContext(proxy.WithForcedMedia(requestContext))
 	}
+	media := func(id string) string {
+		return prefix + "/__access_media/" + id + "?api_key=" + url.QueryEscape(command.Token)
+	}
 	wrap := func(target string) (string, error) {
 		in := command
 		in.Action = "wrap"
@@ -390,9 +383,40 @@ func (a *App) prepareAccess(w http.ResponseWriter, q *http.Request, rr *runtimeR
 		if e != nil {
 			return "", e
 		}
-		return prefix + "/__access_media/" + result.Target + "?api_key=" + url.QueryEscape(command.Token), nil
+		return media(result.Target), nil
 	}
-	q = q.WithContext(proxy.WithAccessProtection(q.Context(), out.SourceToken, command.Token, wrap))
+	wrapBatch := func(targets []string) ([]string, error) {
+		if time.Now().Unix() >= a.wrapBatchRetry.Load() {
+			in := command
+			in.Action = "wrap_batch"
+			in.Targets = targets
+			result, e := a.accessCall(requestContext, in)
+			if e == nil && len(result.Targets) == len(targets) {
+				out := make([]string, len(targets))
+				for i, id := range result.Targets {
+					out[i] = media(id)
+				}
+				return out, nil
+			}
+			if e == nil || !strings.Contains(e.Error(), "invalid subscription action") {
+				if e == nil {
+					e = fmt.Errorf("invalid batch response")
+				}
+				return nil, e
+			}
+			// A control that predates batch wrapping: retry the new action later.
+			a.wrapBatchRetry.Store(time.Now().Add(10 * time.Minute).Unix())
+		}
+		out := make([]string, len(targets))
+		for i, target := range targets {
+			var e error
+			if out[i], e = wrap(target); e != nil {
+				return nil, e
+			}
+		}
+		return out, nil
+	}
+	q = q.WithContext(proxy.WithAccessProtection(q.Context(), out.SourceToken, command.Token, wrap, wrapBatch))
 	return q, gateway, done, false
 }
 
