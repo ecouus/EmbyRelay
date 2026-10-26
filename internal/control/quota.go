@@ -16,6 +16,9 @@ type QuotaGrant struct {
 	Granted int64  `json:"granted"`
 }
 
+// maxQuotaGrant covers one agent batch (32 MiB top-up) and a 10 MiB stream chunk.
+const maxQuotaGrant = 32 * 1024 * 1024
+
 // grantQuota reserves bytes before any agent sends them. Grants cannot be
 // reclaimed while a disconnected node might still use them.
 func (a *App) grantQuota(node Node, in QuotaRequest) (QuotaGrant, error) {
@@ -65,8 +68,8 @@ func (a *App) grantQuota(node Node, in QuotaRequest) (QuotaGrant, error) {
 		return out, ErrQuota
 	}
 	grant := in.Target - existing
-	if grant > 8*1024*1024 {
-		grant = 8 * 1024 * 1024
+	if grant > maxQuotaGrant {
+		grant = maxQuotaGrant
 	}
 	if grant > remaining {
 		grant = remaining

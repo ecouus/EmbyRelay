@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -36,5 +37,39 @@ func TestProtectedRedirectIsMedia(t *testing.T) {
 	v, _ := ctx.Value(forceMediaKey{}).(bool)
 	if !v {
 		t.Fatal("media context missing")
+	}
+}
+
+func TestAccessPlaylistUsesOneBatch(t *testing.T) {
+	base, _ := url.Parse("https://source.example/emby/Videos/1/master.m3u8")
+	request := &http.Request{URL: base}
+	var singles, batches, sizes int
+	p := accessProtection{source: "real-token", token: "proxy-token",
+		wrap: func(s string) (string, error) { singles++; return "/relay/single", nil },
+		wrapBatch: func(targets []string) ([]string, error) {
+			batches++
+			sizes += len(targets)
+			out := make([]string, len(targets))
+			for i, target := range targets {
+				out[i] = "/relay/" + target[strings.LastIndex(target, "/")+1:]
+			}
+			return out, nil
+		}}
+	var b strings.Builder
+	b.WriteString("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\n#EXT-X-MAP:URI=\"init.mp4\",BYTERANGE=\"1@0\"\n")
+	for i := 0; i < 1200; i++ {
+		fmt.Fprintf(&b, "#EXTINF:2,\nseg%d.ts\n", i)
+	}
+	resp := &http.Response{Request: request, Header: http.Header{"Content-Type": []string{"application/vnd.apple.mpegurl"}}, Body: io.NopCloser(strings.NewReader(b.String()))}
+	if err := protectAccessResponse(resp, "/relay", p); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	text := string(raw)
+	if singles != 0 || sizes != 1202 || batches != 3 {
+		t.Fatalf("single=%d batches=%d targets=%d", singles, batches, sizes)
+	}
+	if !strings.Contains(text, "URI=\"/relay/key.bin\"") || !strings.Contains(text, "URI=\"/relay/init.mp4\",BYTERANGE") || !strings.Contains(text, "\n/relay/seg1199.ts") {
+		t.Fatal(text[:300])
 	}
 }

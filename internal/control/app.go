@@ -26,7 +26,10 @@ import (
 type App struct {
 	verifySource     func(context.Context, Upstream, embyCredentials) error
 	AccessRPC        func(context.Context, AccessCommand) (AccessResult, error)
-	accessMu         sync.Mutex
+	accessMu         sync.RWMutex
+	accountLocks     accountLocks
+	pruneMu          sync.Mutex
+	wrapBatchRetry   atomic.Int64
 	AcquireQuota     func(context.Context, Route, int64) error
 	Store            *Store
 	SecureCookies    bool
@@ -87,6 +90,7 @@ type runtimeRoute struct {
 	route   Route
 	gateway *proxy.Gateway
 	keys    []Key
+	byHash  map[string][]Key
 	usage   *routeRuntime
 }
 type cachedMediaGateway struct {
@@ -221,10 +225,11 @@ func (a *App) Apply(s Snapshot) error {
 			a.usage[r.ID] = runtime
 		}
 		cfg := proxy.Config{AutoMediaRedirect: true, Upstream: target, AccessKey: ID(), Network: p, MaxConcurrent: r.MaxConcurrent, MaxResumes: 32, Mode: "proxy", RedirectHosts: u.RedirectHosts, TrustedAuth: true}
-		rr := &runtimeRoute{route: r, gateway: proxy.New(cfg), usage: runtime}
+		rr := &runtimeRoute{route: r, gateway: proxy.New(cfg), usage: runtime, byHash: map[string][]Key{}}
 		for _, k := range s.Keys {
 			if k.RouteID == r.ID {
 				rr.keys = append(rr.keys, k)
+				rr.byHash[k.Hash] = append(rr.byHash[k.Hash], k)
 			}
 		}
 		next.routes[r.Alias] = rr
@@ -414,7 +419,8 @@ func (a *App) admin(w http.ResponseWriter, r *http.Request, user User) {
 	case p == "overview" && r.Method == "GET":
 		s := a.state.Load()
 		traffic, _ := a.Store.Traffic()
-		writeJSON(w, 200, map[string]any{"version": s.snapshot.Version, "active_requests": a.active.Load(), "requests": a.requests.Load(), "upstreams": len(s.snapshot.Upstreams), "routes": len(s.snapshot.Routes), "traffic": traffic})
+		total, _ := a.Store.TrafficTotal()
+		writeJSON(w, 200, map[string]any{"version": s.snapshot.Version, "active_requests": a.active.Load(), "requests": a.requests.Load(), "upstreams": len(s.snapshot.Upstreams), "routes": len(s.snapshot.Routes), "traffic": traffic, "traffic_total": map[string]int64{"ingress_bytes": total.Ingress, "egress_bytes": total.Egress}})
 	case r.URL.Path == "/metrics" && r.Method == "GET":
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		fmt.Fprintf(w, "# TYPE embyrelay_active_requests gauge\nembyrelay_active_requests %d\n# TYPE embyrelay_requests_total counter\nembyrelay_requests_total %d\n", a.active.Load(), a.requests.Load())
@@ -716,8 +722,16 @@ func (a *App) users(w http.ResponseWriter, r *http.Request, u User, id string) {
 		apiError(w, 400, "cannot demote your own account")
 		return
 	}
-	h, e := password(in.Password)
-	if e != nil {
+	var h, oldName, oldRole, oldHash string
+	var e error
+	keepPassword := r.Method == "PATCH" && in.Password == ""
+	if keepPassword {
+		if a.Store.DB.QueryRow("SELECT username,role,password_hash FROM users WHERE id=?", id).Scan(&oldName, &oldRole, &oldHash) != nil {
+			apiError(w, 400, "user not found or storage unavailable")
+			return
+		}
+		h = oldHash
+	} else if h, e = password(in.Password); e != nil {
 		apiError(w, 400, e.Error())
 		return
 	}
@@ -736,6 +750,9 @@ func (a *App) users(w http.ResponseWriter, r *http.Request, u User, id string) {
 		n, _ := result.RowsAffected()
 		if n != 1 {
 			return fmt.Errorf("user not found")
+		}
+		if keepPassword && in.Username == oldName && in.Role == oldRole {
+			return nil
 		}
 		_, err = tx.Exec("DELETE FROM login_sessions WHERE user_id=?", id)
 		return err

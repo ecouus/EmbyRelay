@@ -3,33 +3,37 @@ package control
 import (
 	"context"
 	"database/sql"
+	"embyrelay/internal/database"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"time"
 )
 
 type AccessCommand struct {
-	PublicImage   bool   `json:"public_image,omitempty"`
-	Status        int    `json:"status,omitempty"`
-	DeviceName    string `json:"device_name,omitempty"`
-	ClientName    string `json:"client_name,omitempty"`
-	ClientVersion string `json:"client_version,omitempty"`
-	Paced         bool   `json:"paced,omitempty"`
-	Action        string `json:"action"`
-	AccountID     string `json:"account_id"`
-	KeyID         string `json:"key_id"`
-	Token         string `json:"token"`
-	Lease         string `json:"lease"`
-	Bytes         int64  `json:"bytes"`
-	RefundBytes   int64  `json:"refund_bytes,omitempty"`
-	Stream        bool   `json:"stream"`
-	Username      string `json:"username"`
-	Password      string `json:"password"`
-	Device        string `json:"device"`
-	ClientIP      string `json:"client_ip"`
-	UserAgent     string `json:"user_agent"`
-	Target        string `json:"target"`
+	PublicImage   bool     `json:"public_image,omitempty"`
+	Status        int      `json:"status,omitempty"`
+	DeviceName    string   `json:"device_name,omitempty"`
+	ClientName    string   `json:"client_name,omitempty"`
+	ClientVersion string   `json:"client_version,omitempty"`
+	Paced         bool     `json:"paced,omitempty"`
+	Action        string   `json:"action"`
+	AccountID     string   `json:"account_id"`
+	KeyID         string   `json:"key_id"`
+	Token         string   `json:"token"`
+	Lease         string   `json:"lease"`
+	Bytes         int64    `json:"bytes"`
+	RefundBytes   int64    `json:"refund_bytes,omitempty"`
+	Stream        bool     `json:"stream"`
+	Username      string   `json:"username"`
+	Password      string   `json:"password"`
+	Device        string   `json:"device"`
+	ClientIP      string   `json:"client_ip"`
+	UserAgent     string   `json:"user_agent"`
+	Target        string   `json:"target"`
+	Targets       []string `json:"targets,omitempty"`
+	PaceUnusedNS  int64    `json:"pace_unused_ns,omitempty"`
 }
 type AccessResult struct {
 	DeviceIdentity *DeviceIdentity `json:"device_identity,omitempty"`
@@ -43,16 +47,30 @@ type AccessResult struct {
 	WaitNS         int64           `json:"wait_ns,omitempty"`
 	Payload        json.RawMessage `json:"payload,omitempty"`
 	Target         string          `json:"target,omitempty"`
+	Targets        []string        `json:"targets,omitempty"`
 }
 
 const streamAccessChunk = 10 << 20
+const maxWrapBatch = 1024
 
-// Bound a shared-rate permit to at most 100 ms and 16 KiB of actual output.
+// ErrAccessQuota is returned when the billing cycle cannot cover a charge. Agents
+// restore it from the RPC error text, which older controls also send unchanged.
+var ErrAccessQuota = errors.New("本周期剩余流量不足")
+
+// Smallest shared-rate permit: at most 100 ms and 16 KiB of actual output.
 func accessPaceChunk(rate int64) int {
 	if rate <= 0 {
 		return 16 << 10
 	}
 	return int(min(int64(16<<10), max(int64(1), rate/10)))
+}
+
+// Largest shared-rate permit: about 250 ms of output, never above 1 MiB.
+func accessPaceBatch(rate int64) int64 {
+	if rate <= 0 {
+		return int64(accessPaceChunk(rate))
+	}
+	return min(int64(1<<20), max(int64(accessPaceChunk(rate)), rate/4))
 }
 
 func denied(msg string) (AccessResult, error) { return AccessResult{}, fmt.Errorf("%s", msg) }
@@ -64,6 +82,9 @@ func (a *App) accessCall(ctx context.Context, in AccessCommand) (AccessResult, e
 		out, err := a.AccessRPC(ctx, in)
 		if err == nil && out.Error != "" {
 			err = fmt.Errorf("%s", out.Error)
+			if out.Error == ErrAccessQuota.Error() {
+				err = ErrAccessQuota
+			}
 		}
 		return out, err
 	}
@@ -92,8 +113,17 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 	if in.Action == "login" {
 		return a.accessLogin(ctx, c, in)
 	}
-	a.accessMu.Lock()
-	defer a.accessMu.Unlock()
+	defer a.lockAccount(in.AccountID)()
+	if in.Action == "begin" {
+		// Cross-account garbage collection stays outside account transactions so
+		// concurrent accounts never contend for the same expired rows.
+		a.pruneMu.Lock()
+		_, err = a.Store.DB.ExecContext(ctx, "DELETE FROM access_leases WHERE expires_at<=?", time.Now().Add(-accessSettlementGrace).Unix())
+		a.pruneMu.Unlock()
+		if err != nil {
+			return denied("会话清理失败")
+		}
+	}
 	tx, err := a.Store.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return denied("订阅服务不可用")
@@ -133,6 +163,11 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 			n, _ := result.RowsAffected()
 			if n > 0 {
 				_, err = tx.Exec("UPDATE access_usage SET bytes=CASE WHEN bytes>=? THEN bytes-? ELSE 0 END,retired_at=0 WHERE account_id=? AND cycle=?", in.RefundBytes*2, in.RefundBytes*2, c.ID, chargedCycle)
+			}
+		}
+		if err == nil && in.PaceUnusedNS > 0 {
+			if n, _ := result.RowsAffected(); n > 0 {
+				err = releasePaceSlot(tx, c.ID, now, min(in.PaceUnusedNS, int64(time.Second)))
 			}
 		}
 		if err == nil && in.Status >= 100 && in.Status <= 599 {
@@ -213,9 +248,6 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 				return denied("设备状态更新失败")
 			}
 		}
-		if _, err = tx.Exec("DELETE FROM access_leases WHERE expires_at<=?", now.Add(-accessSettlementGrace).Unix()); err != nil {
-			return denied("会话清理失败")
-		}
 		var n int
 		if in.Stream {
 			if err = tx.QueryRow("SELECT COUNT(*) FROM access_leases WHERE account_id=? AND is_stream=1 AND expires_at>?", c.ID, now.Unix()).Scan(&n); err != nil {
@@ -253,7 +285,7 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 			return denied("授权续期失败")
 		}
 		if in.Action == "pace" {
-			if paced != 1 || in.Bytes <= 0 || in.Bytes > int64(accessPaceChunk(c.Plan.RateBPS)) {
+			if paced != 1 || in.Bytes <= 0 || in.Bytes > accessPaceBatch(c.Plan.RateBPS) {
 				return denied("invalid pace request")
 			}
 			if c.Plan.RateBPS > 0 {
@@ -282,7 +314,7 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 			// Apply centrally so local and Agent traffic use the same multiplier.
 			billedBytes := in.Bytes * 2
 			if c.Plan.TrafficBytes > 0 && billedBytes > c.Plan.TrafficBytes-used {
-				return denied("本周期剩余流量不足")
+				return AccessResult{}, ErrAccessQuota
 			}
 			if _, err = tx.Exec("INSERT INTO access_usage(account_id,cycle,bytes) VALUES(?,?,?) ON CONFLICT(account_id,cycle) DO UPDATE SET bytes=access_usage.bytes+excluded.bytes,retired_at=0", c.ID, cycle, billedBytes); err != nil {
 				return denied("流量计费失败")
@@ -318,6 +350,21 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 			return denied("媒体地址保存失败")
 		}
 		out.Target = id
+	case "wrap_batch":
+		if len(in.Targets) == 0 || len(in.Targets) > maxWrapBatch {
+			return denied("媒体地址无效")
+		}
+		out.Targets = make([]string, len(in.Targets))
+		for i, target := range in.Targets {
+			sealed, e := a.sealMediaTarget(target)
+			if e != nil {
+				return denied(e.Error())
+			}
+			out.Targets[i] = ID()
+			if _, err = tx.Exec("INSERT INTO access_targets VALUES(?,?,?,?,?)", out.Targets[i], c.ID, Hash(in.Token), sealed, now.Add(24*time.Hour).Unix()); err != nil {
+				return denied("媒体地址保存失败")
+			}
+		}
 	case "resolve":
 		var sealed string
 		if err = tx.QueryRow("SELECT target FROM access_targets WHERE id=? AND account_id=? AND token_hash=? AND expires_at>?", in.Target, c.ID, Hash(in.Token), now.Unix()).Scan(&sealed); err != nil {
@@ -334,4 +381,36 @@ func (a *App) accessCommand(ctx context.Context, node string, in AccessCommand) 
 		return denied("订阅服务不可用")
 	}
 	return out, nil
+}
+
+// Validate and encrypt a media target; the error text is safe to show.
+func (a *App) sealMediaTarget(target string) (string, error) {
+	u, e := url.Parse(target)
+	if e != nil || u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") || len(target) > 16384 {
+		return "", errors.New("媒体地址无效")
+	}
+	sealed, e := a.seal(target)
+	if e != nil {
+		return "", errors.New("媒体地址不可用")
+	}
+	return sealed, nil
+}
+
+// Give back the unused tail of a request's last shared-rate permit. Permits are
+// only granted once the previous slot ended, so a booking no longer than the
+// reported tail belongs to this request; a longer one means another stream
+// booked after it and must stay.
+func releasePaceSlot(tx *database.Tx, account string, now time.Time, unused int64) error {
+	var next int64
+	if err := tx.QueryRow("SELECT next_ns FROM access_rate WHERE account_id=?", account).Scan(&next); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	if remaining := next - now.UnixNano(); remaining > 0 && remaining <= unused+int64(20*time.Millisecond) {
+		_, err := tx.Exec("UPDATE access_rate SET next_ns=? WHERE account_id=?", now.UnixNano(), account)
+		return err
+	}
+	return nil
 }

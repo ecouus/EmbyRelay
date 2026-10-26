@@ -315,6 +315,30 @@ func (a *App) report(node Node, in Heartbeat) error {
 		return e
 	}
 	defer tx.Rollback()
+	known := map[string]Traffic{}
+	if len(in.Traffic) > 0 {
+		prefix := node.ID + ":"
+		rows, e := tx.Query("SELECT id,payload FROM objects WHERE kind='relay_traffic' AND substr(id,1,?)=?", len(prefix), prefix)
+		if e != nil {
+			return e
+		}
+		for rows.Next() {
+			var id, raw string
+			var v Traffic
+			if e = rows.Scan(&id, &raw); e != nil {
+				rows.Close()
+				return e
+			}
+			if json.Unmarshal([]byte(raw), &v) == nil {
+				known[id] = v
+			}
+		}
+		if e = rows.Err(); e != nil {
+			rows.Close()
+			return e
+		}
+		rows.Close()
+	}
 	for _, t := range in.Traffic {
 		if !allowed[t.RouteID] {
 			continue
@@ -329,16 +353,14 @@ func (a *App) report(node Node, in Heartbeat) error {
 			continue
 		}
 		id := node.ID + ":" + t.Date + ":" + t.RouteID
-		var previous Traffic
-		var raw string
-		e = tx.QueryRow("SELECT payload FROM objects WHERE kind='relay_traffic' AND id=?", id).Scan(&raw)
-		if e == nil {
-			json.Unmarshal([]byte(raw), &previous)
-		}
+		previous, seen := known[id]
 		// The first actual-v1 report reconciles legacy precharged counters.
 		// Subsequent reports still reject large regressions or database restores.
 		if t.Ingress < previous.Ingress || (!reconcile && previous.Egress-t.Egress > 1<<20) {
 			return fmt.Errorf("traffic counters cannot decrease; preserve agent database")
+		}
+		if seen && !reconcile && t.Ingress == previous.Ingress && t.Egress == previous.Egress {
+			continue
 		}
 		if _, e = tx.Exec("INSERT INTO traffic_daily VALUES(?,?,?,?) ON CONFLICT(date,route_id) DO UPDATE SET ingress_bytes=traffic_daily.ingress_bytes+excluded.ingress_bytes,egress_bytes=traffic_daily.egress_bytes+excluded.egress_bytes", t.Date, t.RouteID, t.Ingress-previous.Ingress, t.Egress-previous.Egress); e != nil {
 			return e

@@ -3,6 +3,7 @@ package migrations
 import (
 	"database/sql"
 	_ "modernc.org/sqlite"
+	"strings"
 	"testing"
 )
 
@@ -107,5 +108,44 @@ func TestUsageRetentionUpgradePreservesLegacyAccounting(t *testing.T) {
 	}
 	if err = Apply(db); err != nil {
 		t.Fatal("repeat migration", err)
+	}
+}
+
+func TestCleanupScanIndexesAreIdempotentAndUsed(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if err = Apply(db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec("DELETE FROM schema_migrations WHERE version=16"); err != nil {
+		t.Fatal(err)
+	}
+	if err = Apply(db); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"stream_sessions_ended", "access_targets_token", "remote_sessions_started"} {
+		var n int
+		if err = db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?", name).Scan(&n); err != nil || n != 1 {
+			t.Fatalf("index %s: %d %v", name, n, err)
+		}
+	}
+	rows, err := db.Query("EXPLAIN QUERY PLAN SELECT id FROM remote_sessions ORDER BY CAST(json_extract(payload,'$.started_at') AS BIGINT) DESC LIMIT 5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	plan := ""
+	for rows.Next() {
+		var a, b, c int
+		var d string
+		rows.Scan(&a, &b, &c, &d)
+		plan += d + ";"
+	}
+	if !strings.Contains(plan, "remote_sessions_started") || strings.Contains(plan, "TEMP B-TREE") {
+		t.Fatalf("plan = %s", plan)
 	}
 }

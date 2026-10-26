@@ -7,7 +7,30 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 )
+
+var trustedProxies struct {
+	sync.Mutex
+	raw      string
+	prefixes []netip.Prefix
+}
+
+func trustedPrefixes() []netip.Prefix {
+	raw := os.Getenv("RELAY_TRUSTED_PROXIES")
+	trustedProxies.Lock()
+	defer trustedProxies.Unlock()
+	if raw != trustedProxies.raw {
+		var out []netip.Prefix
+		for _, item := range strings.Split(raw, ",") {
+			if p, e := netip.ParsePrefix(strings.TrimSpace(item)); e == nil {
+				out = append(out, p)
+			}
+		}
+		trustedProxies.raw, trustedProxies.prefixes = raw, out
+	}
+	return trustedProxies.prefixes
+}
 
 // Forwarded addresses are accepted only from explicitly trusted immediate peers.
 func clientIP(r *http.Request) string {
@@ -20,9 +43,10 @@ func clientIP(r *http.Request) string {
 		return ""
 	}
 	peer = peer.Unmap()
+	prefixes := trustedPrefixes()
 	trusted := func(ip netip.Addr) bool {
-		for _, raw := range strings.Split(os.Getenv("RELAY_TRUSTED_PROXIES"), ",") {
-			if p, e := netip.ParsePrefix(strings.TrimSpace(raw)); e == nil && p.Contains(ip) {
+		for _, p := range prefixes {
+			if p.Contains(ip) {
 				return true
 			}
 		}

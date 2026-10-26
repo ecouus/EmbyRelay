@@ -414,7 +414,7 @@ func (s *Store) ResetAdminPassword(username, pass string) error {
 	}
 	defer tx.Rollback()
 	var id string
-	if err := tx.QueryRow("SELECT id FROM users WHERE username=? AND role='admin'", username).Scan(&id); err != nil {
+	if err := tx.QueryRow("SELECT id FROM users WHERE lower(username)=lower(?) AND role='admin'", username).Scan(&id); err != nil {
 		return fmt.Errorf("administrator not found: %w", err)
 	}
 	if _, err := tx.Exec("UPDATE users SET password_hash=? WHERE id=?", hash, id); err != nil {

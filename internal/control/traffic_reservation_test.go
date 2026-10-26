@@ -28,6 +28,12 @@ func TestTrafficExcludesConcurrentUnusedStreamCredits(t *testing.T) {
 			t.Fatalf("actual traffic: %+v %v; want %d", traffic, err, expected)
 		}
 	}
+	// Consumption is persisted in batches (about 1 MiB or 1 s); settle it first.
+	for _, w := range writers {
+		if err := w.consumeStream(0, true); err != nil {
+			t.Fatal(err)
+		}
+	}
 	assertSent(2 << 20)
 	// Outstanding credits remain charged for quota, even though heartbeat omits them.
 	if err := a.Store.Charge(route.ID, 20<<20, 0, 1); !errors.Is(err, ErrQuota) {

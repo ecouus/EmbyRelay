@@ -330,12 +330,23 @@ func (a *Agent) acquireQuota(ctx context.Context, route control.Route, needed in
 	if target > route.DailyQuota {
 		target = route.DailyQuota
 	}
-	var out control.QuotaGrant
-	if e = a.request(ctx, "POST", "/api/v1/agent/quota", control.QuotaRequest{RouteID: route.ID, Date: day, Target: target}, &out); e != nil {
-		return e
+	// Controllers before this change cap one grant at 8 MiB; ask again until
+	// the request is covered or the controller stops making progress.
+	for attempt := 0; attempt < 4; attempt++ {
+		var out control.QuotaGrant
+		if e = a.request(ctx, "POST", "/api/v1/agent/quota", control.QuotaRequest{RouteID: route.ID, Date: day, Target: target}, &out); e != nil {
+			return e
+		}
+		if out.Date != day || out.Granted < grant {
+			return fmt.Errorf("invalid quota grant")
+		}
+		if e = a.Store.SaveGrant(route.ID, out); e != nil {
+			return e
+		}
+		if out.Granted-used >= needed || out.Granted >= target || out.Granted == grant {
+			return nil
+		}
+		grant = out.Granted
 	}
-	if out.Date != day || out.Granted < grant {
-		return fmt.Errorf("invalid quota grant")
-	}
-	return a.Store.SaveGrant(route.ID, out)
+	return nil
 }
