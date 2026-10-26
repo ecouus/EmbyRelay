@@ -79,7 +79,7 @@ docker compose -f deploy/docker-compose.yml pull
 docker compose -f deploy/docker-compose.yml up -d --no-build
 ```
 
-当前发布版本为 `1.0.23`，`latest` 指向该版本，目标架构为 AMD64/ARM64。HTTPS 和 Agent 使用同一镜像，参照 deployment.md 的配置文件。
+当前发布版本为 `1.0.24`，`latest` 指向该版本，目标架构为 AMD64/ARM64。HTTPS 和 Agent 使用同一镜像，参照 deployment.md 的配置文件。
 
 ## 构建上下文
 
